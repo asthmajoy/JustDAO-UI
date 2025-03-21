@@ -4,186 +4,337 @@ import { useWeb3 } from '../contexts/Web3Context';
 import { PROPOSAL_STATES, PROPOSAL_TYPES } from '../utils/constants';
 
 export function useProposals() {
-  const { contracts, account } = useWeb3();
+  const { contracts, account, isConnected, contractsReady } = useWeb3();
   const [proposals, setProposals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [tokenHolders, setTokenHolders] = useState([]);
 
   const fetchProposals = useCallback(async () => {
-    if (!contracts.governance) return;
+    if (!isConnected || !contractsReady || !contracts.governance) {
+      setLoading(false);
+      return;
+    }
     
     try {
       setLoading(true);
       setError(null);
       
-      // This is a simplified implementation. In a real app, you'd use events or a subgraph
-      // to get all proposal IDs, or use an API to fetch proposals.
-      const mockProposals = [];
+      console.log("Fetching proposals...");
       
-      // In a real implementation, we'd use events to get all proposal IDs
-      // For now, we'll check the last 20 proposal IDs as a simplified approach
-      for (let i = 0; i < 20; i++) {
+      // Find the upper limit of proposal IDs
+      let maxId = 0;
+      let foundEnd = false;
+      
+      // Try to find the most recent proposal ID
+      // Start from a reasonable number and go backward to find the first valid proposal
+      for (let i = 100; i >= 0 && !foundEnd; i--) {
         try {
+          await contracts.governance.getProposalState(i);
+          maxId = i;
+          foundEnd = true;
+          console.log("Found max proposal ID:", maxId);
+        } catch (err) {
+          // Keep searching
+        }
+      }
+      
+      // Check all possible proposal IDs from 0 to maxId
+      const proposalData = [];
+      const uniqueProposers = new Set();
+      
+      for (let i = 0; i <= maxId; i++) {
+        try {
+          console.log("Checking proposal ID:", i);
           const proposalState = await contracts.governance.getProposalState(i);
-          const proposalData = await contracts.governance._proposals(i);
+          const proposalDetails = await contracts.governance._proposals(i);
+          
+          // Add proposer to unique proposers set
+          if (proposalDetails.proposer !== ethers.constants.AddressZero) {
+            uniqueProposers.add(proposalDetails.proposer);
+          }
+          
+          // Extract title and description
+          const { title, description } = extractTitleAndDescription(proposalDetails.description);
           
           // Format the proposal data
           const formattedProposal = {
             id: i,
-            title: extractTitleFromDescription(proposalData.description),
-            description: proposalData.description,
-            proposer: proposalData.proposer,
-            deadline: new Date(proposalData.deadline.toNumber() * 1000),
-            createdAt: new Date(proposalData.createdAt.toNumber() * 1000),
+            title,
+            description,
+            proposer: proposalDetails.proposer,
+            deadline: new Date(proposalDetails.deadline.toNumber() * 1000),
+            createdAt: new Date(proposalDetails.createdAt.toNumber() * 1000),
             state: proposalState,
             stateLabel: getProposalStateLabel(proposalState),
-            type: proposalData.pType,
-            typeLabel: getProposalTypeLabel(proposalData.pType),
-            yesVotes: ethers.utils.formatEther(proposalData.yesVotes),
-            noVotes: ethers.utils.formatEther(proposalData.noVotes),
-            abstainVotes: ethers.utils.formatEther(proposalData.abstainVotes),
-            timelockTxHash: proposalData.timelockTxHash,
-            hasVoted: false
+            type: proposalDetails.pType,
+            typeLabel: getProposalTypeLabel(proposalDetails.pType),
+            yesVotes: ethers.utils.formatEther(proposalDetails.yesVotes),
+            noVotes: ethers.utils.formatEther(proposalDetails.noVotes),
+            abstainVotes: ethers.utils.formatEther(proposalDetails.abstainVotes),
+            timelockTxHash: proposalDetails.timelockTxHash,
+            hasVoted: false,
+            // Additional data based on proposal type
+            target: proposalDetails.target,
+            callData: proposalDetails.callData,
+            recipient: proposalDetails.recipient,
+            amount: ethers.utils.formatEther(proposalDetails.amount),
+            token: proposalDetails.token
           };
+          
+          console.log(`Proposal ${i} data:`, formattedProposal);
           
           // Check if the user has voted on this proposal
           if (account) {
-            const votingPower = await contracts.governance.proposalVoterInfo(i, account);
-            formattedProposal.hasVoted = !votingPower.isZero();
+            try {
+              const votingPower = await contracts.governance.proposalVoterInfo(i, account);
+              formattedProposal.hasVoted = !votingPower.isZero();
+            } catch (err) {
+              console.error(`Error checking if user has voted on proposal ${i}:`, err);
+            }
           }
           
-          mockProposals.push(formattedProposal);
+          proposalData.push(formattedProposal);
         } catch (err) {
-          // Skip if proposal doesn't exist
+          console.log(`Error fetching proposal ${i}:`, err.message);
+          // Skip if proposal doesn't exist or there was an error fetching it
           continue;
         }
       }
       
-      setProposals(mockProposals);
+      console.log("Found", proposalData.length, "proposals");
+      setProposals(proposalData);
+      
+      // Also get token holders
+      try {
+        // Use proposers as token holders
+        const tokenHolderAddresses = Array.from(uniqueProposers);
+        
+        // This is just a simplification to show token holders
+        // In a real implementation, you'd use an indexer or events to track all token holders
+        setTokenHolders(tokenHolderAddresses.length);
+        console.log("Found", tokenHolderAddresses.length, "token holders");
+      } catch (err) {
+        console.error("Error getting token holders:", err);
+      }
+      
     } catch (err) {
       console.error("Error fetching proposals:", err);
-      setError("Failed to fetch proposals");
+      setError("Failed to fetch proposals: " + err.message);
     } finally {
       setLoading(false);
     }
-  }, [contracts.governance, account]);
+  }, [contracts, account, isConnected, contractsReady]);
 
   useEffect(() => {
-    if (contracts.governance) {
-      fetchProposals();
-    }
-  }, [contracts.governance, fetchProposals]);
+    fetchProposals();
+  }, [fetchProposals]);
 
-  const createProposal = async (proposalData) => {
+  const createProposal = async (description, type, target, callData, amount, recipient, token, newThreshold, newQuorum, newVotingDuration, newTimelockDelay) => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.governance) throw new Error("Governance contract not initialized");
     
+    console.log("Creating proposal with params:", {
+      description,
+      type,
+      target,
+      callData,
+      amount,
+      recipient,
+      token,
+      newThreshold,
+      newQuorum,
+      newVotingDuration,
+      newTimelockDelay
+    });
+    
     try {
+      setLoading(true);
+      setError(null);
+      
+      // Validate required fields based on proposal type
+      if (type === PROPOSAL_TYPES.GENERAL) {
+        if (!target) throw new Error("Target address is required for General proposals");
+        if (!callData) throw new Error("Call data is required for General proposals");
+      } else if (type === PROPOSAL_TYPES.WITHDRAWAL || 
+                type === PROPOSAL_TYPES.TOKEN_TRANSFER ||
+                type === PROPOSAL_TYPES.TOKEN_MINT ||
+                type === PROPOSAL_TYPES.TOKEN_BURN) {
+        if (!recipient) throw new Error("Recipient address is required");
+        if (!amount) throw new Error("Amount is required");
+      } else if (type === PROPOSAL_TYPES.EXTERNAL_ERC20_TRANSFER) {
+        if (!recipient) throw new Error("Recipient address is required");
+        if (!amount) throw new Error("Amount is required");
+        if (!token) throw new Error("Token address is required");
+      }
+      
+      // Convert string values to appropriate format
+      const amountBN = amount ? ethers.utils.parseEther(amount.toString()) : 0;
+      const newThresholdBN = newThreshold ? ethers.utils.parseEther(newThreshold.toString()) : 0;
+      const newQuorumBN = newQuorum ? ethers.utils.parseEther(newQuorum.toString()) : 0;
+      const newVotingDurationNum = newVotingDuration ? parseInt(newVotingDuration) : 0;
+      const newTimelockDelayNum = newTimelockDelay ? parseInt(newTimelockDelay) : 0;
+      
+      console.log("Creating proposal with values:", {
+        description,
+        type,
+        target: target || ethers.constants.AddressZero,
+        callData: callData || "0x",
+        amountBN: amountBN.toString(),
+        recipient: recipient || ethers.constants.AddressZero,
+        token: token || ethers.constants.AddressZero,
+        newThresholdBN: newThresholdBN.toString(),
+        newQuorumBN: newQuorumBN.toString(),
+        newVotingDurationNum,
+        newTimelockDelayNum
+      });
+      
+      // Create the proposal
       const tx = await contracts.governance.createProposal(
-        proposalData.description,
-        proposalData.type,
-        proposalData.target || ethers.constants.AddressZero,
-        proposalData.callData || "0x",
-        proposalData.amount ? ethers.utils.parseEther(proposalData.amount.toString()) : 0,
-        proposalData.recipient || ethers.constants.AddressZero,
-        proposalData.token || ethers.constants.AddressZero,
-        proposalData.newThreshold ? ethers.utils.parseEther(proposalData.newThreshold.toString()) : 0,
-        proposalData.newQuorum ? ethers.utils.parseEther(proposalData.newQuorum.toString()) : 0,
-        proposalData.newVotingDuration || 0,
-        proposalData.newTimelockDelay || 0
+        description,
+        type,
+        target || ethers.constants.AddressZero,
+        callData || "0x",
+        amountBN,
+        recipient || ethers.constants.AddressZero,
+        token || ethers.constants.AddressZero,
+        newThresholdBN,
+        newQuorumBN,
+        newVotingDurationNum,
+        newTimelockDelayNum
       );
       
+      console.log("Proposal creation transaction sent:", tx.hash);
+      
       const receipt = await tx.wait();
+      console.log("Proposal creation confirmed:", receipt);
       
       // Refresh proposals list
       await fetchProposals();
       
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error creating proposal:", err);
+      setError("Failed to create proposal: " + err.message);
       throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
   const cancelProposal = async (proposalId) => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.governance) throw new Error("Governance contract not initialized");
     
     try {
+      setLoading(true);
+      setError(null);
+      
       const tx = await contracts.governance.cancelProposal(proposalId);
-      const receipt = await tx.wait();
+      await tx.wait();
       
       // Refresh proposals list
       await fetchProposals();
       
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error canceling proposal:", err);
+      setError("Failed to cancel proposal: " + err.message);
       throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
   const queueProposal = async (proposalId) => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.governance) throw new Error("Governance contract not initialized");
     
     try {
+      setLoading(true);
+      setError(null);
+      
       const tx = await contracts.governance.queueProposal(proposalId);
-      const receipt = await tx.wait();
+      await tx.wait();
       
       // Refresh proposals list
       await fetchProposals();
       
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error queuing proposal:", err);
+      setError("Failed to queue proposal: " + err.message);
       throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
   const executeProposal = async (proposalId) => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.governance) throw new Error("Governance contract not initialized");
     
     try {
+      setLoading(true);
+      setError(null);
+      
       const tx = await contracts.governance.executeProposal(proposalId);
-      const receipt = await tx.wait();
+      await tx.wait();
       
       // Refresh proposals list
       await fetchProposals();
       
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error executing proposal:", err);
+      setError("Failed to execute proposal: " + err.message);
       throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
   const claimRefund = async (proposalId) => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.governance) throw new Error("Governance contract not initialized");
     
     try {
+      setLoading(true);
+      setError(null);
+      
       const tx = await contracts.governance.claimPartialStakeRefund(proposalId);
-      const receipt = await tx.wait();
+      await tx.wait();
       
       // Refresh proposals list
       await fetchProposals();
       
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error claiming refund:", err);
+      setError("Failed to claim refund: " + err.message);
       throw err;
+    } finally {
+      setLoading(false);
     }
   };
 
-  // Helper function to extract a title from the proposal description
-  function extractTitleFromDescription(description) {
-    if (!description) return "Untitled Proposal";
+  // Helper function to extract title and description
+  function extractTitleAndDescription(rawDescription) {
+    if (!rawDescription) return { title: "Untitled Proposal", description: "" };
     
-    // Assuming the first line or first sentence is the title
-    const firstLine = description.split('\n')[0];
-    if (firstLine.length <= 80) return firstLine;
+    // Split by newline to get title and description
+    const parts = rawDescription.split('\n');
+    let title = parts[0].trim();
     
-    const firstSentence = description.split('.')[0];
-    if (firstSentence.length <= 80) return firstSentence + ".";
+    // If title is too long, use the first part of it
+    if (title.length > 80) {
+      title = title.substring(0, 77) + "...";
+    }
     
-    return firstSentence.substring(0, 77) + "...";
+    // Get the full description
+    const description = rawDescription.trim();
+    
+    return { title, description };
   }
 
   // Helper function to get human-readable proposal state label
@@ -220,6 +371,7 @@ export function useProposals() {
     proposals,
     loading,
     error,
+    tokenHolders,
     fetchProposals,
     createProposal,
     cancelProposal,

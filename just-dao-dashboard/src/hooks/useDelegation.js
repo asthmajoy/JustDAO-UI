@@ -3,7 +3,7 @@ import { ethers } from 'ethers';
 import { useWeb3 } from '../contexts/Web3Context';
 
 export function useDelegation() {
-  const { contracts, account } = useWeb3();
+  const { contracts, account, isConnected, contractsReady } = useWeb3();
   const [delegationInfo, setDelegationInfo] = useState({
     currentDelegate: null,
     lockedTokens: "0",
@@ -14,7 +14,10 @@ export function useDelegation() {
   const [error, setError] = useState(null);
 
   const fetchDelegationInfo = useCallback(async () => {
-    if (!contracts.token || !account) return;
+    if (!isConnected || !contractsReady || !contracts.token || !account) {
+      setLoading(false);
+      return;
+    }
     
     try {
       setLoading(true);
@@ -55,15 +58,14 @@ export function useDelegation() {
     } finally {
       setLoading(false);
     }
-  }, [contracts.token, account]);
+  }, [contracts, account, isConnected, contractsReady]);
 
   useEffect(() => {
-    if (contracts.token && account) {
-      fetchDelegationInfo();
-    }
-  }, [contracts.token, account, fetchDelegationInfo]);
+    fetchDelegationInfo();
+  }, [fetchDelegationInfo]);
 
   const delegate = async (delegateeAddress) => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.token) throw new Error("Token contract not initialized");
     if (!ethers.utils.isAddress(delegateeAddress)) throw new Error("Invalid address");
     
@@ -72,12 +74,12 @@ export function useDelegation() {
       setError(null);
       
       const tx = await contracts.token.delegate(delegateeAddress);
-      const receipt = await tx.wait();
+      await tx.wait();
       
       // Refresh delegation info
       await fetchDelegationInfo();
       
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error delegating:", err);
       setError(err.message);
@@ -88,6 +90,7 @@ export function useDelegation() {
   };
 
   const resetDelegation = async () => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.token) throw new Error("Token contract not initialized");
     
     try {
@@ -95,12 +98,12 @@ export function useDelegation() {
       setError(null);
       
       const tx = await contracts.token.resetDelegation();
-      const receipt = await tx.wait();
+      await tx.wait();
       
       // Refresh delegation info
       await fetchDelegationInfo();
       
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error resetting delegation:", err);
       setError(err.message);
@@ -111,6 +114,7 @@ export function useDelegation() {
   };
 
   const getDelegationDepthWarning = async (delegator, delegatee) => {
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.daoHelper) throw new Error("DAO helper contract not initialized");
     
     try {

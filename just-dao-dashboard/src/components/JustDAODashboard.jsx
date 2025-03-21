@@ -1,28 +1,105 @@
 import React, { useState, useEffect } from 'react';
-import { Bell, Settings, Users, BarChart2, FileText, ArrowRight } from 'lucide-react';
+import { useWeb3 } from '../contexts/Web3Context';
+import { useAuth } from '../contexts/AuthContext';
+import { useDelegation } from '../hooks/useDelegation';
+import { useProposals } from '../hooks/useProposals';
+import { useVoting } from '../hooks/useVoting';
+import { formatAddress, formatBigNumber, formatRelativeTime, formatCountdown, formatPercentage, formatNumber } from '../utils/formatters';
+import { PROPOSAL_STATES, PROPOSAL_TYPES, VOTE_TYPES } from '../utils/constants';
+import { ArrowRight } from 'lucide-react';
 
 const JustDAODashboard = () => {
   // State for active tab
   const [activeTab, setActiveTab] = useState('dashboard');
   
-  // Mock user state (would come from wallet connection)
-  const [user, setUser] = useState({
-    address: '0x1234...5678',
-    roles: ['user'], // Possible values: user, admin, analytics
-    balance: 1000,
-    votingPower: 2500,
-    delegate: '0x1234...5678', // Self-delegated initially
-    lockedTokens: 0
+  // Web3 context for blockchain connection
+  const { account, isConnected, connectWallet, disconnectWallet, contracts } = useWeb3();
+  
+  // Auth context for user data
+  const { user, hasRole } = useAuth();
+  
+  // Custom hooks for DAO functionality
+  const delegation = useDelegation();
+  const proposalsHook = useProposals();
+  const votingHook = useVoting();
+  
+  // Dashboard metrics state
+  const [dashboardStats, setDashboardStats] = useState({
+    totalHolders: 0,
+    circulatingSupply: "0",
+    activeProposals: 0,
+    totalProposals: 0,
+    participationRate: 0,
+    delegationRate: 0,
+    proposalSuccessRate: 0
   });
-
-  // Connect wallet functionality (simplified)
-  const connectWallet = () => {
-    // This would integrate with MetaMask or other wallet providers
-    console.log('Connecting wallet...');
-  };
-
-  // Role-based access control
-  const hasRole = (role) => user.roles.includes(role);
+  
+  // Load dashboard data
+  useEffect(() => {
+    const loadDashboardData = async () => {
+      if (contracts.token && contracts.governance) {
+        try {
+          // Try to count token holders from the analytics helper if available
+          let totalHolders = 0;
+          
+          if (contracts.analyticsHelper) {
+            try {
+              // Try to get token distribution analytics for holder count
+              const tokenAnalytics = await contracts.analyticsHelper.getTokenDistributionAnalytics();
+              if (tokenAnalytics) {
+                // Sum up holder counts by category
+                totalHolders = parseInt(tokenAnalytics.smallHolderCount) + 
+                               parseInt(tokenAnalytics.mediumHolderCount) + 
+                               parseInt(tokenAnalytics.largeHolderCount);
+              }
+            } catch (analyticsError) {
+              console.error("Error getting analytics data:", analyticsError);
+              // Fallback to a default value if analytics fails
+              totalHolders = 1; // At least the connected user
+            }
+          }
+          
+          // Get token supply
+          const totalSupply = await contracts.token.totalSupply();
+          const circulatingSupply = formatBigNumber(totalSupply);
+          
+          // Get proposal stats from the proposals hook
+          const activeProposalsCount = proposalsHook.proposals.filter(
+            p => p.state === PROPOSAL_STATES.ACTIVE
+          ).length;
+          
+          // Default metrics if analytics fails or is not available
+          let participationRate = 65; 
+          let delegationRate = 60;
+          let successRate = 75;
+          
+          setDashboardStats({
+            totalHolders: totalHolders || 1, // Default to at least 1 holder (the user)
+            circulatingSupply,
+            activeProposals: activeProposalsCount,
+            totalProposals: proposalsHook.proposals.length,
+            participationRate,
+            delegationRate,
+            proposalSuccessRate: successRate
+          });
+        } catch (error) {
+          console.error("Error loading dashboard data:", error);
+          // Set minimal default values on error
+          setDashboardStats({
+            totalHolders: 1,
+            circulatingSupply: user.balance || "0",
+            activeProposals: 0,
+            totalProposals: 0,
+            participationRate: 0,
+            delegationRate: 0,
+            proposalSuccessRate: 0
+          });
+        }
+      }
+    };
+    
+    loadDashboardData();
+  }, [contracts, proposalsHook.proposals, user.balance]);
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50">
@@ -33,20 +110,33 @@ const JustDAODashboard = () => {
             <h1 className="text-2xl font-bold text-indigo-600">JustDAO</h1>
           </div>
           <div className="flex items-center gap-4">
-            <div className="text-sm text-gray-700">
-              <div>{user.address}</div>
-              <div className="flex gap-2">
-                <span>{user.balance} JUST</span>
-                <span>|</span>
-                <span>{user.votingPower} Voting Power</span>
+            {isConnected ? (
+              <div className="text-sm text-gray-700">
+                <div>{formatAddress(account)}</div>
+                <div className="flex gap-2">
+                  <span>{user.balance} JUST</span>
+                  <span>|</span>
+                  <span>{user.votingPower} Voting Power</span>
+                </div>
               </div>
-            </div>
-            <button 
-              className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md"
-              onClick={connectWallet}
-            >
-              Connect Wallet
-            </button>
+            ) : (
+              <div className="text-sm text-gray-700">Not connected</div>
+            )}
+            {isConnected ? (
+              <button 
+                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md"
+                onClick={disconnectWallet}
+              >
+                Disconnect
+              </button>
+            ) : (
+              <button 
+                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md"
+                onClick={connectWallet}
+              >
+                Connect Wallet
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -105,12 +195,46 @@ const JustDAODashboard = () => {
 
       {/* Main Content */}
       <main className="flex-grow max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
-        {activeTab === 'dashboard' && <DashboardTab />}
-        {activeTab === 'proposals' && <ProposalsTab />}
-        {activeTab === 'vote' && <VoteTab />}
-        {activeTab === 'delegation' && <DelegationTab user={user} />}
-        {activeTab === 'analytics' && hasRole('analytics') && <AnalyticsTab />}
-        {activeTab === 'admin' && hasRole('admin') && <AdminTab />}
+        {activeTab === 'dashboard' && (
+          <DashboardTab 
+            user={user} 
+            stats={dashboardStats} 
+            proposals={proposalsHook.proposals.filter(p => p.state === PROPOSAL_STATES.ACTIVE)}
+          />
+        )}
+        {activeTab === 'proposals' && (
+          <ProposalsTab 
+            proposals={proposalsHook.proposals}
+            createProposal={proposalsHook.createProposal}
+            cancelProposal={proposalsHook.cancelProposal}
+            queueProposal={proposalsHook.queueProposal}
+            executeProposal={proposalsHook.executeProposal}
+            claimRefund={proposalsHook.claimRefund}
+            loading={proposalsHook.loading}
+          />
+        )}
+        {activeTab === 'vote' && (
+          <VoteTab 
+            proposals={proposalsHook.proposals}
+            castVote={votingHook.castVote}
+            hasVoted={votingHook.hasVoted}
+            getVotingPower={votingHook.getVotingPower}
+            voting={votingHook.voting}
+            account={account}
+          />
+        )}
+        {activeTab === 'delegation' && (
+          <DelegationTab 
+            user={user} 
+            delegation={delegation}
+          />
+        )}
+        {activeTab === 'analytics' && hasRole('analytics') && (
+          <AnalyticsTab contracts={contracts} />
+        )}
+        {activeTab === 'admin' && hasRole('admin') && (
+          <AdminTab contracts={contracts} />
+        )}
       </main>
 
       {/* Footer */}
@@ -124,7 +248,7 @@ const JustDAODashboard = () => {
 };
 
 // Dashboard Tab Component
-const DashboardTab = () => {
+const DashboardTab = ({ user, stats, proposals }) => {
   return (
     <div>
       <h2 className="text-xl font-semibold mb-4">Dashboard</h2>
@@ -135,20 +259,20 @@ const DashboardTab = () => {
           <h3 className="text-lg font-medium text-gray-900 mb-2">DAO Overview</h3>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <p className="text-gray-500">Total Supply</p>
-              <p className="text-2xl font-bold">1,000,000</p>
+              <p className="text-gray-500">Token Holders</p>
+              <p className="text-2xl font-bold">{stats.totalHolders}</p>
             </div>
             <div>
               <p className="text-gray-500">Circulating</p>
-              <p className="text-2xl font-bold">750,000</p>
+              <p className="text-2xl font-bold">{stats.circulatingSupply}</p>
             </div>
             <div>
               <p className="text-gray-500">Active Proposals</p>
-              <p className="text-2xl font-bold">3</p>
+              <p className="text-2xl font-bold">{stats.activeProposals}</p>
             </div>
             <div>
               <p className="text-gray-500">Total Proposals</p>
-              <p className="text-2xl font-bold">42</p>
+              <p className="text-2xl font-bold">{stats.totalProposals}</p>
             </div>
           </div>
         </div>
@@ -158,11 +282,11 @@ const DashboardTab = () => {
           <div className="space-y-3">
             <div>
               <p className="text-gray-500">Balance</p>
-              <p className="text-2xl font-bold">1,000 JUST</p>
+              <p className="text-2xl font-bold">{user.balance} JUST</p>
             </div>
             <div>
               <p className="text-gray-500">Voting Power</p>
-              <p className="text-2xl font-bold">2,500 JUST</p>
+              <p className="text-2xl font-bold">{user.votingPower} JUST</p>
             </div>
             <div className="mt-4">
               <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium flex items-center">
@@ -179,95 +303,79 @@ const DashboardTab = () => {
             <div>
               <div className="flex justify-between mb-1">
                 <p className="text-gray-500 text-sm">Participation Rate</p>
-                <p className="text-sm font-medium">72%</p>
+                <p className="text-sm font-medium">{stats.participationRate.toFixed(0)}%</p>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-green-500 h-2 rounded-full" style={{ width: '72%' }}></div>
+                <div className="bg-green-500 h-2 rounded-full" style={{ width: `${stats.participationRate}%` }}></div>
               </div>
             </div>
             <div>
               <div className="flex justify-between mb-1">
                 <p className="text-gray-500 text-sm">Delegation Rate</p>
-                <p className="text-sm font-medium">65%</p>
+                <p className="text-sm font-medium">{stats.delegationRate.toFixed(0)}%</p>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-blue-500 h-2 rounded-full" style={{ width: '65%' }}></div>
+                <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${stats.delegationRate}%` }}></div>
               </div>
             </div>
             <div>
               <div className="flex justify-between mb-1">
                 <p className="text-gray-500 text-sm">Proposal Success Rate</p>
-                <p className="text-sm font-medium">80%</p>
+                <p className="text-sm font-medium">{stats.proposalSuccessRate.toFixed(0)}%</p>
               </div>
               <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-indigo-500 h-2 rounded-full" style={{ width: '80%' }}></div>
+                <div className="bg-indigo-500 h-2 rounded-full" style={{ width: `${stats.proposalSuccessRate}%` }}></div>
               </div>
             </div>
           </div>
         </div>
       </div>
       
-      {/* Recent Activity & Active Proposals */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Recent Activity</h3>
-          <div className="space-y-4">
-            {[
-              { type: 'Voted', desc: 'You voted "Yes" on DAOChanges', time: '2 hours ago' },
-              { type: 'Proposal Passed', desc: 'Treasury Funding Round 3', time: '1 day ago' },
-              { type: 'Delegated', desc: 'Alice delegated 500 JUST to you', time: '3 days ago' },
-              { type: 'Voted', desc: 'You voted "No" on Parameter Change', time: '5 days ago' }
-            ].map((activity, idx) => (
-              <div key={idx} className="flex justify-between items-start border-b border-gray-100 pb-3 last:border-0 last:pb-0">
-                <div>
-                  <p className="font-medium">{activity.type}</p>
-                  <p className="text-sm text-gray-500">{activity.desc}</p>
-                </div>
-                <span className="text-xs text-gray-400">{activity.time}</span>
-              </div>
-            ))}
-          </div>
+      {/* Active Proposals */}
+      <div className="bg-white p-6 rounded-lg shadow">
+        <div className="flex justify-between mb-4">
+          <h3 className="text-lg font-medium text-gray-900">Active Proposals</h3>
+          <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">View All</button>
         </div>
-        
-        <div className="bg-white p-6 rounded-lg shadow">
-          <div className="flex justify-between mb-4">
-            <h3 className="text-lg font-medium text-gray-900">Active Proposals</h3>
-            <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">View All</button>
-          </div>
-          <div className="space-y-4">
-            {[
-              { id: 'PROP-123', title: 'Increase Quorum Requirement', deadline: '12 hours left', votes: { yes: 60, no: 20, abstain: 20 } },
-              { id: 'PROP-122', title: 'Mint Tokens for Treasury', deadline: '1 day left', votes: { yes: 45, no: 40, abstain: 15 } },
-              { id: 'PROP-121', title: 'Fund Developer Grants', deadline: '3 days left', votes: { yes: 75, no: 15, abstain: 10 } }
-            ].map((proposal, idx) => (
-              <div key={idx} className="p-4 border border-gray-200 rounded-lg">
-                <div className="flex justify-between items-start mb-2">
-                  <div>
-                    <p className="font-medium">{proposal.title}</p>
-                    <p className="text-xs text-gray-500">{proposal.id}</p>
+        <div className="space-y-4">
+          {proposals.length > 0 ? (
+            proposals.map((proposal, idx) => {
+              const totalVotes = parseFloat(proposal.yesVotes) + parseFloat(proposal.noVotes) + parseFloat(proposal.abstainVotes);
+              const yesPercentage = totalVotes > 0 ? (parseFloat(proposal.yesVotes) / totalVotes) * 100 : 0;
+              const noPercentage = totalVotes > 0 ? (parseFloat(proposal.noVotes) / totalVotes) * 100 : 0;
+              const abstainPercentage = totalVotes > 0 ? (parseFloat(proposal.abstainVotes) / totalVotes) * 100 : 0;
+              
+              return (
+                <div key={idx} className="p-4 border border-gray-200 rounded-lg">
+                  <div className="flex justify-between items-start mb-2">
+                    <div>
+                      <p className="font-medium">{proposal.title}</p>
+                      <p className="text-xs text-gray-500">Proposal #{proposal.id}</p>
+                    </div>
+                    <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+                      {formatCountdown(proposal.deadline)}
+                    </span>
                   </div>
-                  <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">{proposal.deadline}</span>
-                </div>
-                <div className="flex justify-between text-sm mb-2">
-                  <span>Yes: {proposal.votes.yes}%</span>
-                  <span>No: {proposal.votes.no}%</span>
-                  <span>Abstain: {proposal.votes.abstain}%</span>
-                </div>
-                <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                  <div className="flex h-full">
-                    <div className="bg-green-500 h-full" style={{ width: `${proposal.votes.yes}%` }}></div>
-                    <div className="bg-red-500 h-full" style={{ width: `${proposal.votes.no}%` }}></div>
-                    <div className="bg-gray-400 h-full" style={{ width: `${proposal.votes.abstain}%` }}></div>
+                  <div className="flex justify-between text-sm mb-2">
+                    <span>Yes: {yesPercentage.toFixed(0)}%</span>
+                    <span>No: {noPercentage.toFixed(0)}%</span>
+                    <span>Abstain: {abstainPercentage.toFixed(0)}%</span>
+                  </div>
+                  <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div className="flex h-full">
+                      <div className="bg-green-500 h-full" style={{ width: `${yesPercentage}%` }}></div>
+                      <div className="bg-red-500 h-full" style={{ width: `${noPercentage}%` }}></div>
+                      <div className="bg-gray-400 h-full" style={{ width: `${abstainPercentage}%` }}></div>
+                    </div>
                   </div>
                 </div>
-                <div className="mt-3 flex space-x-2">
-                  <button className="bg-green-500 hover:bg-green-600 text-white px-2 py-1 rounded text-xs">Vote Yes</button>
-                  <button className="bg-red-500 hover:bg-red-600 text-white px-2 py-1 rounded text-xs">Vote No</button>
-                  <button className="bg-gray-500 hover:bg-gray-600 text-white px-2 py-1 rounded text-xs">Abstain</button>
-                </div>
-              </div>
-            ))}
-          </div>
+              );
+            })
+          ) : (
+            <div className="text-center py-6 text-gray-500">
+              No active proposals at the moment
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -275,9 +383,73 @@ const DashboardTab = () => {
 };
 
 // Proposals Tab Component
-const ProposalsTab = () => {
+const ProposalsTab = ({ 
+  proposals, 
+  createProposal, 
+  cancelProposal, 
+  queueProposal, 
+  executeProposal, 
+  claimRefund,
+  loading
+}) => {
   const [proposalType, setProposalType] = useState('all');
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newProposal, setNewProposal] = useState({
+    title: '',
+    description: '',
+    type: PROPOSAL_TYPES.GENERAL,
+    target: '',
+    callData: '',
+    amount: '',
+    recipient: '',
+    token: '',
+    newThreshold: '',
+    newQuorum: '',
+    newVotingDuration: '',
+    newTimelockDelay: ''
+  });
+
+  const handleSubmitProposal = async (e) => {
+    e.preventDefault();
+    
+    try {
+      const description = `${newProposal.title}\n\n${newProposal.description}`;
+      
+      await createProposal(
+        description,
+        parseInt(newProposal.type),
+        newProposal.target,
+        newProposal.callData || '0x',
+        newProposal.amount,
+        newProposal.recipient,
+        newProposal.token,
+        newProposal.newThreshold,
+        newProposal.newQuorum,
+        newProposal.newVotingDuration,
+        newProposal.newTimelockDelay
+      );
+      
+      setShowCreateModal(false);
+      // Reset form
+      setNewProposal({
+        title: '',
+        description: '',
+        type: PROPOSAL_TYPES.GENERAL,
+        target: '',
+        callData: '',
+        amount: '',
+        recipient: '',
+        token: '',
+        newThreshold: '',
+        newQuorum: '',
+        newVotingDuration: '',
+        newTimelockDelay: ''
+      });
+    } catch (error) {
+      console.error("Error creating proposal:", error);
+      alert("Error creating proposal. See console for details.");
+    }
+  };
 
   return (
     <div>
@@ -297,7 +469,7 @@ const ProposalsTab = () => {
       {/* Filter options */}
       <div className="bg-white p-4 rounded-lg shadow mb-6">
         <div className="flex flex-wrap gap-2">
-          {['all', 'active', 'pending', 'passed', 'executed', 'defeated', 'canceled'].map(type => (
+          {['all', 'active', 'pending', 'succeeded', 'executed', 'defeated', 'canceled'].map(type => (
             <button
               key={type}
               className={`px-3 py-1 rounded-full text-sm ${proposalType === type ? 'bg-indigo-100 text-indigo-800' : 'bg-gray-100 text-gray-800'}`}
@@ -311,115 +483,376 @@ const ProposalsTab = () => {
       
       {/* Proposals list */}
       <div className="space-y-4">
-        {[
-          { id: 'PROP-123', title: 'Increase Quorum Requirement', type: 'GovernanceChange', status: 'active', created: '2 days ago', proposer: '0xabc...123' },
-          { id: 'PROP-122', title: 'Mint Tokens for Treasury', type: 'TokenMint', status: 'active', created: '3 days ago', proposer: '0xdef...456' },
-          { id: 'PROP-121', title: 'Fund Developer Grants', type: 'TokenTransfer', status: 'active', created: '5 days ago', proposer: '0xghi...789' },
-          { id: 'PROP-120', title: 'Update Governance Parameters', type: 'GovernanceChange', status: 'passed', created: '1 week ago', proposer: '0xjkl...012' },
-          { id: 'PROP-119', title: 'External ERC20 Token Transfer', type: 'ExternalERC20Transfer', status: 'executed', created: '2 weeks ago', proposer: '0xmno...345' },
-          { id: 'PROP-118', title: 'Withdraw ETH from Treasury', type: 'Withdrawal', status: 'defeated', created: '3 weeks ago', proposer: '0xpqr...678' },
-        ].filter(p => proposalType === 'all' || p.status === proposalType).map((proposal, idx) => (
-          <div key={idx} className="bg-white p-6 rounded-lg shadow">
-            <div className="flex justify-between items-start mb-4">
-              <div>
-                <h3 className="text-lg font-medium">{proposal.title}</h3>
-                <p className="text-sm text-gray-500">{proposal.id}</p>
-              </div>
-              <div className="flex items-center">
-                <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(proposal.status)}`}>
-                  {proposal.status.charAt(0).toUpperCase() + proposal.status.slice(1)}
-                </span>
-              </div>
-            </div>
-            
-            <div className="grid grid-cols-3 gap-4 mb-4 text-sm text-gray-500">
-              <div>
-                <p className="font-medium">Type</p>
-                <p>{proposal.type}</p>
-              </div>
-              <div>
-                <p className="font-medium">Created</p>
-                <p>{proposal.created}</p>
-              </div>
-              <div>
-                <p className="font-medium">Proposer</p>
-                <p>{proposal.proposer}</p>
-              </div>
-            </div>
-            
-            <div className="flex space-x-2">
-              <button className="text-indigo-600 border border-indigo-600 px-3 py-1 rounded-md text-sm hover:bg-indigo-50">View Details</button>
-              
-              {proposal.status === 'active' && (
-                <>
-                  <button className="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded-md text-sm">Vote</button>
-                </>
-              )}
-              
-              {proposal.status === 'passed' && (
-                <button className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md text-sm">Queue</button>
-              )}
-              
-              {proposal.status === 'pending' && (
-                <button className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-1 rounded-md text-sm">Execute</button>
-              )}
-              
-              {(proposal.status === 'active' || proposal.status === 'pending') && (
-                <button className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-md text-sm">Cancel</button>
-              )}
-              
-              {(proposal.status === 'defeated' || proposal.status === 'canceled') && (
-                <button className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded-md text-sm">Claim Refund</button>
-              )}
-            </div>
+        {loading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
           </div>
-        ))}
+        ) : proposals.length > 0 ? (
+          proposals
+            .filter(p => proposalType === 'all' || p.stateLabel.toLowerCase() === proposalType)
+            .map((proposal, idx) => (
+              <div key={idx} className="bg-white p-6 rounded-lg shadow">
+                <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <h3 className="text-lg font-medium">{proposal.title}</h3>
+                    <p className="text-sm text-gray-500">Proposal #{proposal.id}</p>
+                  </div>
+                  <div className="flex items-center">
+                    <span className={`text-xs px-2 py-1 rounded-full ${getStatusColor(proposal.stateLabel.toLowerCase())}`}>
+                      {proposal.stateLabel}
+                    </span>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-3 gap-4 mb-4 text-sm text-gray-500">
+                  <div>
+                    <p className="font-medium">Type</p>
+                    <p>{proposal.typeLabel}</p>
+                  </div>
+                  <div>
+                    <p className="font-medium">Created</p>
+                    <p>{formatRelativeTime(proposal.createdAt)}</p>
+                  </div>
+                  <div>
+                    <p className="font-medium">Proposer</p>
+                    <p>{formatAddress(proposal.proposer)}</p>
+                  </div>
+                </div>
+                
+                <div className="flex space-x-2">
+                  <button className="text-indigo-600 border border-indigo-600 px-3 py-1 rounded-md text-sm hover:bg-indigo-50">View Details</button>
+                  
+                  {proposal.state === PROPOSAL_STATES.ACTIVE && (
+                    <button 
+                      className="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-md text-sm"
+                      onClick={() => cancelProposal(proposal.id)}
+                    >
+                      Cancel
+                    </button>
+                  )}
+                  
+                  {proposal.state === PROPOSAL_STATES.SUCCEEDED && (
+                    <button 
+                      className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-1 rounded-md text-sm"
+                      onClick={() => queueProposal(proposal.id)}
+                    >
+                      Queue
+                    </button>
+                  )}
+                  
+                  {proposal.state === PROPOSAL_STATES.QUEUED && (
+                    <button 
+                      className="bg-purple-500 hover:bg-purple-600 text-white px-3 py-1 rounded-md text-sm"
+                      onClick={() => executeProposal(proposal.id)}
+                    >
+                      Execute
+                    </button>
+                  )}
+                  
+                  {(proposal.state === PROPOSAL_STATES.DEFEATED || 
+                    proposal.state === PROPOSAL_STATES.CANCELED || 
+                    proposal.state === PROPOSAL_STATES.EXPIRED) && (
+                    <button 
+                      className="bg-gray-500 hover:bg-gray-600 text-white px-3 py-1 rounded-md text-sm"
+                      onClick={() => claimRefund(proposal.id)}
+                    >
+                      Claim Refund
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))
+        ) : (
+          <div className="text-center py-8 text-gray-500">
+            No proposals found
+          </div>
+        )}
       </div>
       
-      {/* Create Proposal Modal (simplified) */}
+      {/* Create Proposal Modal */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg max-w-2xl w-full p-6">
+          <div className="bg-white rounded-lg max-w-2xl w-full p-6 max-h-screen overflow-y-auto">
             <h2 className="text-xl font-semibold mb-4">Create New Proposal</h2>
             
-            <div className="space-y-4">
+            <form onSubmit={handleSubmitProposal} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Proposal Title</label>
-                <input type="text" className="w-full rounded-md border border-gray-300 p-2" placeholder="Enter proposal title" />
+                <input 
+                  type="text" 
+                  className="w-full rounded-md border border-gray-300 p-2" 
+                  placeholder="Enter proposal title" 
+                  value={newProposal.title}
+                  onChange={(e) => setNewProposal({...newProposal, title: e.target.value})}
+                  required
+                />
               </div>
               
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Proposal Type</label>
-                <select className="w-full rounded-md border border-gray-300 p-2">
-                  <option value="general">General</option>
-                  <option value="withdrawal">Withdrawal</option>
-                  <option value="tokenTransfer">Token Transfer</option>
-                  <option value="governanceChange">Governance Change</option>
-                  <option value="externalERC20Transfer">External ERC20 Transfer</option>
-                  <option value="tokenMint">Token Mint</option>
-                  <option value="tokenBurn">Token Burn</option>
+                <select 
+                  className="w-full rounded-md border border-gray-300 p-2"
+                  value={newProposal.type}
+                  onChange={(e) => setNewProposal({...newProposal, type: e.target.value})}
+                  required
+                >
+                  <option value={PROPOSAL_TYPES.GENERAL}>General</option>
+                  <option value={PROPOSAL_TYPES.WITHDRAWAL}>Withdrawal</option>
+                  <option value={PROPOSAL_TYPES.TOKEN_TRANSFER}>Token Transfer</option>
+                  <option value={PROPOSAL_TYPES.GOVERNANCE_CHANGE}>Governance Change</option>
+                  <option value={PROPOSAL_TYPES.EXTERNAL_ERC20_TRANSFER}>External ERC20 Transfer</option>
+                  <option value={PROPOSAL_TYPES.TOKEN_MINT}>Token Mint</option>
+                  <option value={PROPOSAL_TYPES.TOKEN_BURN}>Token Burn</option>
                 </select>
               </div>
               
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-                <textarea className="w-full rounded-md border border-gray-300 p-2" rows="4" placeholder="Describe your proposal"></textarea>
+                <textarea 
+                  className="w-full rounded-md border border-gray-300 p-2" 
+                  rows="4" 
+                  placeholder="Describe your proposal"
+                  value={newProposal.description}
+                  onChange={(e) => setNewProposal({...newProposal, description: e.target.value})}
+                  required
+                ></textarea>
               </div>
               
-              {/* Additional fields would appear based on selected proposal type */}
+              {/* Additional fields based on proposal type */}
+              {newProposal.type === PROPOSAL_TYPES.GENERAL && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Target Address</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.target}
+                      onChange={(e) => setNewProposal({...newProposal, target: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Call Data</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.callData}
+                      onChange={(e) => setNewProposal({...newProposal, callData: e.target.value})}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+              
+              {newProposal.type === PROPOSAL_TYPES.WITHDRAWAL && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Address</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.recipient}
+                      onChange={(e) => setNewProposal({...newProposal, recipient: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Amount (ETH)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="Amount" 
+                      value={newProposal.amount}
+                      onChange={(e) => setNewProposal({...newProposal, amount: e.target.value})}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+              
+              {newProposal.type === PROPOSAL_TYPES.TOKEN_TRANSFER && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Address</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.recipient}
+                      onChange={(e) => setNewProposal({...newProposal, recipient: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Amount (JUST)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="Amount" 
+                      value={newProposal.amount}
+                      onChange={(e) => setNewProposal({...newProposal, amount: e.target.value})}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+              
+              {newProposal.type === PROPOSAL_TYPES.TOKEN_MINT && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Address</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.recipient}
+                      onChange={(e) => setNewProposal({...newProposal, recipient: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Amount to Mint (JUST)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="Amount" 
+                      value={newProposal.amount}
+                      onChange={(e) => setNewProposal({...newProposal, amount: e.target.value})}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+              
+              {newProposal.type === PROPOSAL_TYPES.TOKEN_BURN && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">From Address</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.recipient}
+                      onChange={(e) => setNewProposal({...newProposal, recipient: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Amount to Burn (JUST)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="Amount" 
+                      value={newProposal.amount}
+                      onChange={(e) => setNewProposal({...newProposal, amount: e.target.value})}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+              
+              {newProposal.type === PROPOSAL_TYPES.EXTERNAL_ERC20_TRANSFER && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Recipient Address</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.recipient}
+                      onChange={(e) => setNewProposal({...newProposal, recipient: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Token Address</label>
+                    <input 
+                      type="text" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="0x..." 
+                      value={newProposal.token}
+                      onChange={(e) => setNewProposal({...newProposal, token: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Amount</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="Amount" 
+                      value={newProposal.amount}
+                      onChange={(e) => setNewProposal({...newProposal, amount: e.target.value})}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+              
+              {newProposal.type === PROPOSAL_TYPES.GOVERNANCE_CHANGE && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">New Threshold (optional)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="New proposal threshold" 
+                      value={newProposal.newThreshold}
+                      onChange={(e) => setNewProposal({...newProposal, newThreshold: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">New Quorum (optional)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="New quorum" 
+                      value={newProposal.newQuorum}
+                      onChange={(e) => setNewProposal({...newProposal, newQuorum: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">New Voting Duration (optional, in seconds)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="New voting duration" 
+                      value={newProposal.newVotingDuration}
+                      onChange={(e) => setNewProposal({...newProposal, newVotingDuration: e.target.value})}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">New Timelock Delay (optional, in seconds)</label>
+                    <input 
+                      type="number" 
+                      className="w-full rounded-md border border-gray-300 p-2" 
+                      placeholder="New timelock delay" 
+                      value={newProposal.newTimelockDelay}
+                      onChange={(e) => setNewProposal({...newProposal, newTimelockDelay: e.target.value})}
+                    />
+                  </div>
+                </>
+              )}
               
               <div className="flex justify-end space-x-2 pt-4">
                 <button 
+                  type="button"
                   className="px-4 py-2 border border-gray-300 rounded-md hover:bg-gray-50"
                   onClick={() => setShowCreateModal(false)}
                 >
                   Cancel
                 </button>
-                <button className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700">
+                <button 
+                  type="submit"
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+                >
                   Create Proposal
                 </button>
               </div>
-            </div>
+            </form>
           </div>
         </div>
       )}
@@ -428,9 +861,29 @@ const ProposalsTab = () => {
 };
 
 // Vote Tab Component
-const VoteTab = () => {
+const VoteTab = ({ proposals, castVote, hasVoted, getVotingPower, voting, account }) => {
   const [voteFilter, setVoteFilter] = useState('active');
   
+  // Filter proposals based on vote status
+  const filteredProposals = proposals.filter(proposal => {
+    if (voteFilter === 'active') {
+      return proposal.state === PROPOSAL_STATES.ACTIVE && !proposal.hasVoted;
+    } else if (voteFilter === 'voted') {
+      return proposal.hasVoted;
+    }
+    return true; // 'all' filter
+  });
+
+  // Submit vote
+  const submitVote = async (proposalId, support) => {
+    try {
+      await castVote(proposalId, support);
+    } catch (error) {
+      console.error("Error casting vote:", error);
+      alert("Error casting vote. See console for details.");
+    }
+  };
+
   return (
     <div>
       <div className="mb-6">
@@ -455,107 +908,130 @@ const VoteTab = () => {
       
       {/* Voting cards */}
       <div className="space-y-6">
-        {[
-          { 
-            id: 'PROP-123', 
-            title: 'Increase Quorum Requirement', 
-            desc: 'Proposal to increase the quorum requirement from 10% to 15% to ensure broader participation.',
-            deadline: '12 hours left',
-            votes: { yes: 60, no: 20, abstain: 20 },
-            voted: false
-          },
-          { 
-            id: 'PROP-122', 
-            title: 'Mint Tokens for Treasury', 
-            desc: 'Mint 100,000 JUST tokens to fund community grants and development initiatives.',
-            deadline: '1 day left',
-            votes: { yes: 45, no: 40, abstain: 15 },
-            voted: false
-          },
-          { 
-            id: 'PROP-121', 
-            title: 'Fund Developer Grants', 
-            desc: 'Transfer 50,000 JUST tokens to the Developer Grant multisig to fund Q2 development efforts.',
-            deadline: '3 days left',
-            votes: { yes: 75, no: 15, abstain: 10 },
-            voted: true,
-            yourVote: 'yes'
-          }
-        ].filter(p => {
-          if (voteFilter === 'active') return !p.voted;
-          if (voteFilter === 'voted') return p.voted;
-          return true;
-        }).map((proposal, idx) => (
-          <div key={idx} className="bg-white p-6 rounded-lg shadow">
-            <div className="flex justify-between items-start mb-3">
-              <div>
-                <h3 className="text-lg font-medium">{proposal.title}</h3>
-                <p className="text-xs text-gray-500">{proposal.id}</p>
-              </div>
-              <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">{proposal.deadline}</span>
-            </div>
+        {voting.loading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
+          </div>
+        ) : filteredProposals.length > 0 ? (
+          filteredProposals.map((proposal, idx) => {
+            const totalVotes = parseFloat(proposal.yesVotes) + parseFloat(proposal.noVotes) + parseFloat(proposal.abstainVotes);
+            const yesPercentage = totalVotes > 0 ? (parseFloat(proposal.yesVotes) / totalVotes) * 100 : 0;
+            const noPercentage = totalVotes > 0 ? (parseFloat(proposal.noVotes) / totalVotes) * 100 : 0;
+            const abstainPercentage = totalVotes > 0 ? (parseFloat(proposal.abstainVotes) / totalVotes) * 100 : 0;
             
-            <p className="text-gray-700 mb-4">{proposal.desc}</p>
-            
-            <div className="mb-4">
-              <div className="flex justify-between text-sm mb-2">
-                <span>Yes: {proposal.votes.yes}%</span>
-                <span>No: {proposal.votes.no}%</span>
-                <span>Abstain: {proposal.votes.abstain}%</span>
-              </div>
-              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                <div className="flex h-full">
-                  <div className="bg-green-500 h-full" style={{ width: `${proposal.votes.yes}%` }}></div>
-                  <div className="bg-red-500 h-full" style={{ width: `${proposal.votes.no}%` }}></div>
-                  <div className="bg-gray-400 h-full" style={{ width: `${proposal.votes.abstain}%` }}></div>
+            return (
+              <div key={idx} className="bg-white p-6 rounded-lg shadow">
+                <div className="flex justify-between items-start mb-3">
+                  <div>
+                    <h3 className="text-lg font-medium">{proposal.title}</h3>
+                    <p className="text-xs text-gray-500">Proposal #{proposal.id}</p>
+                  </div>
+                  <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+                    {formatCountdown(proposal.deadline)}
+                  </span>
+                </div>
+                
+                <p className="text-gray-700 mb-4">{proposal.description.substring(0, 150)}...</p>
+                
+                <div className="mb-4">
+                  <div className="flex justify-between text-sm mb-2">
+                    <span>Yes: {yesPercentage.toFixed(0)}%</span>
+                    <span>No: {noPercentage.toFixed(0)}%</span>
+                    <span>Abstain: {abstainPercentage.toFixed(0)}%</span>
+                  </div>
+                  <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                    <div className="flex h-full">
+                      <div className="bg-green-500 h-full" style={{ width: `${yesPercentage}%` }}></div>
+                      <div className="bg-red-500 h-full" style={{ width: `${noPercentage}%` }}></div>
+                      <div className="bg-gray-400 h-full" style={{ width: `${abstainPercentage}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+                
+                {proposal.hasVoted ? (
+                  <div className="flex items-center text-sm text-gray-700">
+                    <span className="mr-2">You voted:</span>
+                    <span className="px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
+                      Voted
+                    </span>
+                  </div>
+                ) : proposal.state === PROPOSAL_STATES.ACTIVE && (
+                  <div className="flex space-x-2">
+                    <button 
+                      className="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 rounded-md"
+                      onClick={() => submitVote(proposal.id, VOTE_TYPES.FOR)}
+                    >
+                      Vote Yes
+                    </button>
+                    <button 
+                      className="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 rounded-md"
+                      onClick={() => submitVote(proposal.id, VOTE_TYPES.AGAINST)}
+                    >
+                      Vote No
+                    </button>
+                    <button 
+                      className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-2 rounded-md"
+                      onClick={() => submitVote(proposal.id, VOTE_TYPES.ABSTAIN)}
+                    >
+                      Abstain
+                    </button>
+                  </div>
+                )}
+                
+                <div className="mt-4 text-center">
+                  <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
+                    View Full Details
+                  </button>
                 </div>
               </div>
-            </div>
-            
-            {proposal.voted ? (
-              <div className="flex items-center text-sm text-gray-700">
-                <span className="mr-2">You voted:</span>
-                <span className={`px-2 py-1 rounded-full text-xs ${
-                  proposal.yourVote === 'yes' ? 'bg-green-100 text-green-800' : 
-                  proposal.yourVote === 'no' ? 'bg-red-100 text-red-800' : 
-                  'bg-gray-100 text-gray-800'
-                }`}>
-                  {proposal.yourVote.toUpperCase()}
-                </span>
-              </div>
-            ) : (
-              <div className="flex space-x-2">
-                <button className="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 rounded-md">Vote Yes</button>
-                <button className="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 rounded-md">Vote No</button>
-                <button className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-2 rounded-md">Abstain</button>
-              </div>
-            )}
-            
-            <div className="mt-4 text-center">
-              <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
-                View Full Details
-              </button>
-            </div>
+            );
+          })
+        ) : (
+          <div className="text-center py-8 text-gray-500">
+            No proposals found for this filter
           </div>
-        ))}
+        )}
       </div>
     </div>
   );
 };
 
 // Delegation Tab Component
-const DelegationTab = ({ user }) => {
+const DelegationTab = ({ user, delegation }) => {
   const [delegateAddress, setDelegateAddress] = useState('');
-  const [delegationStats, setDelegationStats] = useState({
-    topDelegates: [
-      { address: '0xabc...123', power: 250000, percentage: '25%' },
-      { address: '0xdef...456', power: 150000, percentage: '15%' },
-      { address: '0xghi...789', power: 100000, percentage: '10%' }
-    ],
-    delegatedToYou: 1500,
-    totalDelegating: 450000,
-    totalSupply: 1000000
-  });
+  const { delegationInfo, loading, delegate, resetDelegation, getDelegationDepthWarning } = delegation;
+
+  const handleDelegate = async () => {
+    if (!delegateAddress) return;
+    
+    try {
+      // Check for potential delegation depth issues
+      const warning = await getDelegationDepthWarning(user.address, delegateAddress);
+      
+      if (warning.warningLevel === 3) {
+        alert("This delegation would exceed the maximum delegation depth limit or create a cycle");
+        return;
+      } else if (warning.warningLevel > 0) {
+        const proceed = window.confirm(warning.message + ". Do you want to proceed?");
+        if (!proceed) return;
+      }
+      
+      await delegate(delegateAddress);
+      setDelegateAddress('');
+    } catch (error) {
+      console.error("Error delegating:", error);
+      alert("Error delegating. See console for details.");
+    }
+  };
+
+  const handleResetDelegation = async () => {
+    try {
+      await resetDelegation();
+    } catch (error) {
+      console.error("Error resetting delegation:", error);
+      alert("Error resetting delegation. See console for details.");
+    }
+  };
 
   return (
     <div>
@@ -564,165 +1040,161 @@ const DelegationTab = ({ user }) => {
         <p className="text-gray-500">Manage your voting power delegation</p>
       </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-        {/* Your delegation status */}
-        <div className="bg-white p-6 rounded-lg shadow md:col-span-2">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Your Delegation Status</h3>
-          
-          <div className="grid grid-cols-2 gap-4 mb-6">
-            <div>
-              <p className="text-sm text-gray-500">Current Delegate</p>
-              <p className="font-medium">
-                {user.delegate === user.address ? 'Self (not delegated)' : user.delegate}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Locked Tokens</p>
-              <p className="font-medium">{user.lockedTokens} JUST</p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Your Balance</p>
-              <p className="font-medium">{user.balance} JUST</p>
-            </div>
-            <div>
-              <p className="text-sm text-gray-500">Your Voting Power</p>
-              <p className="font-medium">{user.votingPower} JUST</p>
-            </div>
-          </div>
-          
-          <div className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Delegate To</label>
-              <div className="flex space-x-2">
-                <input 
-                  type="text" 
-                  className="flex-1 rounded-md border border-gray-300 p-2" 
-                  placeholder="Enter delegate address" 
-                  value={delegateAddress}
-                  onChange={(e) => setDelegateAddress(e.target.value)}
-                />
-                <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                  Delegate
-                </button>
+      {loading ? (
+        <div className="flex justify-center py-8">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+          {/* Your delegation status */}
+          <div className="bg-white p-6 rounded-lg shadow md:col-span-2">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">Your Delegation Status</h3>
+            
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <div>
+                <p className="text-sm text-gray-500">Current Delegate</p>
+                <p className="font-medium">
+                  {delegationInfo.currentDelegate && delegationInfo.currentDelegate !== user.address ? 
+                    formatAddress(delegationInfo.currentDelegate) : 
+                    'Self (not delegated)'}
+                </p>
               </div>
-              <p className="text-xs text-gray-500 mt-1">
-                Delegating locks your tokens but allows you to maintain ownership while transferring voting power.
-              </p>
+              <div>
+                <p className="text-sm text-gray-500">Locked Tokens</p>
+                <p className="font-medium">{delegationInfo.lockedTokens} JUST</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Your Balance</p>
+                <p className="font-medium">{user.balance} JUST</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Your Voting Power</p>
+                <p className="font-medium">{user.votingPower} JUST</p>
+              </div>
             </div>
             
-            <div className="pt-4 border-t border-gray-200">
-              {user.delegate !== user.address && (
-                <button className="w-full bg-red-100 text-red-700 hover:bg-red-200 py-2 rounded-md">
-                  Reset Delegation (Self-Delegate)
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-        
-        {/* Delegated to you */}
-        <div className="bg-white p-6 rounded-lg shadow">
-          <h3 className="text-lg font-medium text-gray-900 mb-4">Delegated to You</h3>
-          
-          <div className="text-center py-4">
-            <p className="text-3xl font-bold text-indigo-600">{delegationStats.delegatedToYou}</p>
-            <p className="text-sm text-gray-500">JUST tokens</p>
-          </div>
-          
-          <p className="text-sm text-gray-700 mb-4">
-            You have {delegationStats.delegatedToYou} JUST tokens delegated to your address from other token holders.
-          </p>
-          
-          <button className="w-full bg-indigo-100 text-indigo-700 hover:bg-indigo-200 py-2 rounded-md">
-            View Delegators
-          </button>
-        </div>
-      </div>
-      
-      {/* DAO Delegation Overview */}
-      <div className="bg-white p-6 rounded-lg shadow mb-6">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">DAO Delegation Overview</h3>
-        
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-          <div>
-            <p className="text-sm text-gray-500">Total Delegating</p>
-            <p className="text-2xl font-bold">{delegationStats.totalDelegating} JUST</p>
-            <p className="text-xs text-gray-500">
-              {((delegationStats.totalDelegating / delegationStats.totalSupply) * 100).toFixed(1)}% of total supply
-            </p>
-          </div>
-          <div>
-            <p className="text-sm text-gray-500">Top Delegate Concentration</p>
-            <p className="text-2xl font-bold">
-              {((delegationStats.topDelegates[0].power / delegationStats.totalSupply) * 100).toFixed(1)}%
-            </p>
-            <p className="text-xs text-gray-500">
-              Controlled by {delegationStats.topDelegates[0].address}
-            </p>
-          </div>
-          <div>
-            <p className="text-sm text-gray-500">Active Delegates</p>
-            <p className="text-2xl font-bold">128</p>
-            <p className="text-xs text-gray-500">
-              Accounts with delegated voting power
-            </p>
-          </div>
-        </div>
-        
-        <h4 className="font-medium mb-2">Top Delegates</h4>
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead>
-              <tr>
-                <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Delegate</th>
-                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Voting Power</th>
-                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">% of Supply</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {delegationStats.topDelegates.map((delegate, idx) => (
-                <tr key={idx}>
-                  <td className="px-4 py-2 whitespace-nowrap">{delegate.address}</td>
-                  <td className="px-4 py-2 whitespace-nowrap text-right">{delegate.power.toLocaleString()} JUST</td>
-                  <td className="px-4 py-2 whitespace-nowrap text-right">{delegate.percentage}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-      
-      {/* Your Delegation History */}
-      <div className="bg-white p-6 rounded-lg shadow">
-        <h3 className="text-lg font-medium text-gray-900 mb-4">Your Delegation History</h3>
-        
-        <div className="space-y-4">
-          {[
-            { type: 'Delegated To', address: '0xdef...456', amount: '1000 JUST', date: '2023-01-15' },
-            { type: 'Reset Delegation', address: 'Self', amount: '1000 JUST', date: '2023-01-01' },
-            { type: 'Delegated To', address: '0xabc...123', amount: '1000 JUST', date: '2022-12-20' }
-          ].map((event, idx) => (
-            <div key={idx} className="flex justify-between items-center border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+            <div className="space-y-4">
               <div>
-                <p className="font-medium">{event.type}</p>
-                <p className="text-sm text-gray-500">{event.address}</p>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Delegate To</label>
+                <div className="flex space-x-2">
+                  <input 
+                    type="text" 
+                    className="flex-1 rounded-md border border-gray-300 p-2" 
+                    placeholder="Enter delegate address" 
+                    value={delegateAddress}
+                    onChange={(e) => setDelegateAddress(e.target.value)}
+                  />
+                  <button 
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md"
+                    onClick={handleDelegate}
+                  >
+                    Delegate
+                  </button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Delegating locks your tokens but allows you to maintain ownership while transferring voting power.
+                </p>
               </div>
-              <div className="text-right">
-                <p className="font-medium">{event.amount}</p>
-                <p className="text-xs text-gray-500">{event.date}</p>
+              
+              <div className="pt-4 border-t border-gray-200">
+                {delegationInfo.currentDelegate && delegationInfo.currentDelegate !== user.address && (
+                  <button 
+                    className="w-full bg-red-100 text-red-700 hover:bg-red-200 py-2 rounded-md"
+                    onClick={handleResetDelegation}
+                  >
+                    Reset Delegation (Self-Delegate)
+                  </button>
+                )}
               </div>
             </div>
-          ))}
+          </div>
+          
+          {/* Delegated to you */}
+          <div className="bg-white p-6 rounded-lg shadow">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">Delegated to You</h3>
+            
+            <div className="text-center py-4">
+              <p className="text-3xl font-bold text-indigo-600">{delegationInfo.delegatedToYou}</p>
+              <p className="text-sm text-gray-500">JUST tokens</p>
+            </div>
+            
+            <p className="text-sm text-gray-700 mb-4">
+              You have {delegationInfo.delegatedToYou} JUST tokens delegated to your address from other token holders.
+            </p>
+            
+            {delegationInfo.delegators && delegationInfo.delegators.length > 0 ? (
+              <div className="space-y-2">
+                <h4 className="font-medium text-sm">Your Delegators:</h4>
+                {delegationInfo.delegators.map((delegator, idx) => (
+                  <div key={idx} className="text-sm flex justify-between items-center border-t pt-2">
+                    <span>{formatAddress(delegator.address)}</span>
+                    <span className="font-medium">{delegator.balance} JUST</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">No delegators yet</p>
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
 
 // Analytics Tab Component (Role-restricted)
-const AnalyticsTab = () => {
+const AnalyticsTab = ({ contracts }) => {
   const [selectedMetric, setSelectedMetric] = useState('proposal');
-  
+  const [analyticsData, setAnalyticsData] = useState({
+    proposals: null,
+    voters: null,
+    tokens: null,
+    timelock: null,
+    health: null
+  });
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const loadAnalytics = async () => {
+      if (!contracts.analyticsHelper) return;
+      
+      setLoading(true);
+      try {
+        switch (selectedMetric) {
+          case 'proposal':
+            const proposalAnalytics = await contracts.analyticsHelper.getProposalAnalytics(0, 100);
+            setAnalyticsData(prevData => ({...prevData, proposals: proposalAnalytics}));
+            break;
+          case 'voter':
+            const voterAnalytics = await contracts.analyticsHelper.getVoterBehaviorAnalytics(100);
+            setAnalyticsData(prevData => ({...prevData, voters: voterAnalytics}));
+            break;
+          case 'token':
+            const tokenAnalytics = await contracts.analyticsHelper.getTokenDistributionAnalytics();
+            setAnalyticsData(prevData => ({...prevData, tokens: tokenAnalytics}));
+            break;
+          case 'timelock':
+            const timelockAnalytics = await contracts.analyticsHelper.getTimelockAnalytics(100);
+            setAnalyticsData(prevData => ({...prevData, timelock: timelockAnalytics}));
+            break;
+          case 'health':
+            const healthScore = await contracts.analyticsHelper.calculateGovernanceHealthScore();
+            setAnalyticsData(prevData => ({...prevData, health: healthScore}));
+            break;
+          default:
+            console.log('Unknown metric selected:', selectedMetric);
+            break;
+        }
+      } catch (error) {
+        console.error(`Error loading ${selectedMetric} analytics:`, error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    loadAnalytics();
+  }, [contracts.analyticsHelper, selectedMetric]);
+
   return (
     <div>
       <div className="mb-6">
@@ -753,396 +1225,339 @@ const AnalyticsTab = () => {
       
       {/* Analytics content */}
       <div className="bg-white p-6 rounded-lg shadow mb-6">
-        {selectedMetric === 'proposal' && (
+        {loading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
+          </div>
+        ) : (
           <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Proposal Analytics</h3>
-            
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Total Proposals</p>
-                <p className="text-2xl font-bold">42</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Active Proposals</p>
-                <p className="text-2xl font-bold">3</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Success Rate</p>
-                <p className="text-2xl font-bold">78%</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Avg. Participation</p>
-                <p className="text-2xl font-bold">65%</p>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Success Rate by Proposal Type</h4>
-            <div className="space-y-3 mb-6">
-              {[
-                { type: 'General', rate: 85, count: 12 },
-                { type: 'TokenTransfer', rate: 75, count: 8 },
-                { type: 'Withdrawal', rate: 60, count: 5 },
-                { type: 'GovernanceChange', rate: 90, count: 10 },
-                { type: 'TokenMint', rate: 65, count: 4 },
-                { type: 'TokenBurn', rate: 50, count: 2 },
-                { type: 'ExternalERC20Transfer', rate: 70, count: 1 }
-              ].map((item, idx) => (
-                <div key={idx}>
-                  <div className="flex justify-between mb-1">
-                    <div className="flex items-center">
-                      <span className="font-medium">{item.type}</span>
-                      <span className="text-xs text-gray-500 ml-2">({item.count})</span>
-                    </div>
-                    <span className="text-sm">{item.rate}%</span>
+            {selectedMetric === 'proposal' && analyticsData.proposals && (
+              <>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Proposal Analytics</h3>
+                
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Total Proposals</p>
+                    <p className="text-2xl font-bold">{analyticsData.proposals.totalProposals.toString()}</p>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div 
-                      className={`${item.rate > 70 ? 'bg-green-500' : item.rate > 50 ? 'bg-yellow-500' : 'bg-red-500'} h-2 rounded-full`} 
-                      style={{ width: `${item.rate}%` }}
-                    ></div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Active Proposals</p>
+                    <p className="text-2xl font-bold">{analyticsData.proposals.activeProposals.toString()}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Success Rate</p>
+                    <p className="text-2xl font-bold">
+                      {formatPercentage(analyticsData.proposals.generalSuccessRate / 100)}
+                    </p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Avg. Participation</p>
+                    <p className="text-2xl font-bold">
+                      {formatPercentage(analyticsData.proposals.avgVotingTurnout / 100)}
+                    </p>
                   </div>
                 </div>
-              ))}
-            </div>
-            
-            <div className="flex justify-end">
-              <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
-                Export Analytics
-              </button>
-            </div>
-          </>
-        )}
-        
-        {selectedMetric === 'voter' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Voter Behavior Analytics</h3>
-            
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Total Voters</p>
-                <p className="text-2xl font-bold">250</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Active Voters</p>
-                <p className="text-2xl font-bold">120</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Super Active</p>
-                <p className="text-2xl font-bold">45</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Delegation Rate</p>
-                <p className="text-2xl font-bold">65%</p>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Voter Distribution</h4>
-            <div className="space-y-3 mb-6">
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Yes Leaning (>66%)</span>
-                  <span className="text-sm">65%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '65%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">No Leaning (>66%)</span>
-                  <span className="text-sm">15%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-red-500 h-2 rounded-full" style={{ width: '15%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Balanced Voters</span>
-                  <span className="text-sm">20%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-blue-500 h-2 rounded-full" style={{ width: '20%' }}></div>
-                </div>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Top Voters</h4>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead>
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Address</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Proposals Voted</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Voting Power</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Yes %</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
+                
+                <h4 className="font-medium mb-2">Success Rate by Proposal Type</h4>
+                <div className="space-y-3 mb-6">
                   {[
-                    { address: '0xabc...123', voted: 40, power: 250000, yesRate: 75 },
-                    { address: '0xdef...456', voted: 38, power: 150000, yesRate: 60 },
-                    { address: '0xghi...789', voted: 35, power: 100000, yesRate: 85 }
-                  ].map((voter, idx) => (
-                    <tr key={idx}>
-                      <td className="px-4 py-2 whitespace-nowrap">{voter.address}</td>
-                      <td className="px-4 py-2 whitespace-nowrap text-right">{voter.voted}</td>
-                      <td className="px-4 py-2 whitespace-nowrap text-right">{voter.power.toLocaleString()}</td>
-                      <td className="px-4 py-2 whitespace-nowrap text-right">{voter.yesRate}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-        
-        {selectedMetric === 'token' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Token Distribution Analytics</h3>
-            
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Total Supply</p>
-                <p className="text-2xl font-bold">1,000,000</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Circulating</p>
-                <p className="text-2xl font-bold">750,000</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Treasury</p>
-                <p className="text-2xl font-bold">250,000</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Delegated</p>
-                <p className="text-2xl font-bold">450,000</p>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Holder Distribution</h4>
-            <div className="space-y-3 mb-6">
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Small Holders (&lt;1%)</span>
-                  <span className="text-sm">350,000 JUST (35%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-blue-500 h-2 rounded-full" style={{ width: '35%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Medium Holders (1-5%)</span>
-                  <span className="text-sm">250,000 JUST (25%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-indigo-500 h-2 rounded-full" style={{ width: '25%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Large Holders (&gt;5%)</span>
-                  <span className="text-sm">150,000 JUST (15%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-purple-500 h-2 rounded-full" style={{ width: '15%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Treasury</span>
-                  <span className="text-sm">250,000 JUST (25%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '25%' }}></div>
-                </div>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Gini Coefficient: 0.42</h4>
-            <p className="text-sm text-gray-500 mb-4">Represents the inequality of token distribution (0 = perfect equality, 1 = perfect inequality)</p>
-            
-            <div className="flex justify-end">
-              <button className="text-indigo-600 hover:text-indigo-800 text-sm font-medium">
-                Download Distribution Report
-              </button>
-            </div>
-          </>
-        )}
-        
-        {selectedMetric === 'timelock' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Timelock Analytics</h3>
-            
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Total Transactions</p>
-                <p className="text-2xl font-bold">35</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Executed</p>
-                <p className="text-2xl font-bold">28</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Pending</p>
-                <p className="text-2xl font-bold">4</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg">
-                <p className="text-sm text-gray-500">Canceled</p>
-                <p className="text-2xl font-bold">3</p>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Threat Level Distribution</h4>
-            <div className="space-y-3 mb-6">
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Low Threat</span>
-                  <span className="text-sm">15 (43%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '43%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Medium Threat</span>
-                  <span className="text-sm">10 (29%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-yellow-500 h-2 rounded-full" style={{ width: '29%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">High Threat</span>
-                  <span className="text-sm">8 (23%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-orange-500 h-2 rounded-full" style={{ width: '23%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Critical Threat</span>
-                  <span className="text-sm">2 (6%)</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-red-500 h-2 rounded-full" style={{ width: '6%' }}></div>
-                </div>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Avg. Execution Delays</h4>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div className="p-4 bg-gray-50 rounded-lg text-center">
-                <p className="text-sm text-gray-500">Low Threat</p>
-                <p className="text-xl font-bold">1 day</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg text-center">
-                <p className="text-sm text-gray-500">Medium Threat</p>
-                <p className="text-xl font-bold">3 days</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg text-center">
-                <p className="text-sm text-gray-500">High Threat</p>
-                <p className="text-xl font-bold">7 days</p>
-              </div>
-              <div className="p-4 bg-gray-50 rounded-lg text-center">
-                <p className="text-sm text-gray-500">Critical Threat</p>
-                <p className="text-xl font-bold">14 days</p>
-              </div>
-            </div>
-          </>
-        )}
-        
-        {selectedMetric === 'health' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Governance Health Score</h3>
-            
-            <div className="flex justify-center mb-6">
-              <div className="w-40 h-40 rounded-full border-8 border-indigo-500 flex items-center justify-center">
-                <span className="text-4xl font-bold text-indigo-600">82</span>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Health Score Breakdown</h4>
-            <div className="space-y-3 mb-6">
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Participation Score</span>
-                  <span className="text-sm">18/20</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '90%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Delegation Score</span>
-                  <span className="text-sm">15/20</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '75%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Activity Score</span>
-                  <span className="text-sm">16/20</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '80%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Execution Score</span>
-                  <span className="text-sm">17/20</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '85%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between mb-1">
-                  <span className="font-medium">Threat Diversity Score</span>
-                  <span className="text-sm">16/20</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div className="bg-green-500 h-2 rounded-full" style={{ width: '80%' }}></div>
-                </div>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Health History</h4>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead>
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Score</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Change</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {[
-                    { date: '2023-03-15', score: 82, change: '+2' },
-                    { date: '2023-02-15', score: 80, change: '-1' },
-                    { date: '2023-01-15', score: 81, change: '+5' },
-                    { date: '2022-12-15', score: 76, change: '+3' }
+                    { type: 'General', rate: analyticsData.proposals.generalSuccessRate / 100, count: analyticsData.proposals.generalProposals },
+                    { type: 'Withdrawal', rate: analyticsData.proposals.withdrawalSuccessRate / 100, count: analyticsData.proposals.withdrawalProposals },
+                    { type: 'TokenTransfer', rate: analyticsData.proposals.tokenTransferSuccessRate / 100, count: analyticsData.proposals.tokenTransferProposals },
+                    { type: 'GovernanceChange', rate: analyticsData.proposals.governanceChangeSuccessRate / 100, count: analyticsData.proposals.governanceChangeProposals },
+                    { type: 'ExternalERC20Transfer', rate: analyticsData.proposals.externalERC20SuccessRate / 100, count: analyticsData.proposals.externalERC20Proposals },
+                    { type: 'TokenMint', rate: analyticsData.proposals.tokenMintSuccessRate / 100, count: analyticsData.proposals.tokenMintProposals },
+                    { type: 'TokenBurn', rate: analyticsData.proposals.tokenBurnSuccessRate / 100, count: analyticsData.proposals.tokenBurnProposals }
                   ].map((item, idx) => (
-                    <tr key={idx}>
-                      <td className="px-4 py-2 whitespace-nowrap">{item.date}</td>
-                      <td className="px-4 py-2 whitespace-nowrap text-right">{item.score}</td>
-                      <td className={`px-4 py-2 whitespace-nowrap text-right ${item.change.startsWith('+') ? 'text-green-500' : 'text-red-500'}`}>
-                        {item.change}
-                      </td>
-                    </tr>
+                    <div key={idx}>
+                      <div className="flex justify-between mb-1">
+                        <div className="flex items-center">
+                          <span className="font-medium">{item.type}</span>
+                          <span className="text-xs text-gray-500 ml-2">({item.count.toString()})</span>
+                        </div>
+                        <span className="text-sm">{formatPercentage(item.rate)}</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div 
+                          className={`${item.rate > 70 ? 'bg-green-500' : item.rate > 50 ? 'bg-yellow-500' : 'bg-red-500'} h-2 rounded-full`} 
+                          style={{ width: `${item.rate}%` }}
+                        ></div>
+                      </div>
+                    </div>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </div>
+              </>
+            )}
+            
+            {selectedMetric === 'voter' && analyticsData.voters && (
+              <>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Voter Behavior Analytics</h3>
+                
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Total Voters</p>
+                    <p className="text-2xl font-bold">{analyticsData.voters.totalVoters.toString()}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Active Voters</p>
+                    <p className="text-2xl font-bold">{analyticsData.voters.activeVoters.toString()}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Super Active</p>
+                    <p className="text-2xl font-bold">{analyticsData.voters.superActiveVoters.toString()}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Delegation Rate</p>
+                    <p className="text-2xl font-bold">{formatPercentage(analyticsData.tokens?.percentageDelegated / 100 || 0)}</p>
+                  </div>
+                </div>
+                
+                <h4 className="font-medium mb-2">Voter Distribution</h4>
+                <div className="space-y-3 mb-6">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Yes Leaning (>66%)</span>
+                      <span className="text-sm">{analyticsData.voters.yesLeaning.toString()}</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(analyticsData.voters.yesLeaning / analyticsData.voters.totalVoters) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">No Leaning (>66%)</span>
+                      <span className="text-sm">{analyticsData.voters.noLeaning.toString()}</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-red-500 h-2 rounded-full" style={{ width: `${(analyticsData.voters.noLeaning / analyticsData.voters.totalVoters) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Balanced Voters</span>
+                      <span className="text-sm">{analyticsData.voters.balanced.toString()}</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${(analyticsData.voters.balanced / analyticsData.voters.totalVoters) * 100}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+            
+            {selectedMetric === 'token' && analyticsData.tokens && (
+              <>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Token Distribution Analytics</h3>
+                
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Total Supply</p>
+                    <p className="text-2xl font-bold">{formatBigNumber(analyticsData.tokens.totalSupply)}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Circulating</p>
+                    <p className="text-2xl font-bold">{formatBigNumber(analyticsData.tokens.circulatingSupply)}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Treasury</p>
+                    <p className="text-2xl font-bold">{formatBigNumber(analyticsData.tokens.treasuryBalance)}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Delegated</p>
+                    <p className="text-2xl font-bold">{formatBigNumber(analyticsData.tokens.delegatedTokens)}</p>
+                  </div>
+                </div>
+                
+                <h4 className="font-medium mb-2">Holder Distribution</h4>
+                <div className="space-y-3 mb-6">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Small Holders (&lt;1%)</span>
+                      <span className="text-sm">{formatBigNumber(analyticsData.tokens.smallHolderBalance)} JUST ({((analyticsData.tokens.smallHolderBalance / analyticsData.tokens.totalSupply) * 100).toFixed(0)}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-blue-500 h-2 rounded-full" style={{ width: `${(analyticsData.tokens.smallHolderBalance / analyticsData.tokens.totalSupply) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Medium Holders (1-5%)</span>
+                      <span className="text-sm">{formatBigNumber(analyticsData.tokens.mediumHolderBalance)} JUST ({((analyticsData.tokens.mediumHolderBalance / analyticsData.tokens.totalSupply) * 100).toFixed(0)}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-indigo-500 h-2 rounded-full" style={{ width: `${(analyticsData.tokens.mediumHolderBalance / analyticsData.tokens.totalSupply) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Large Holders (&gt;5%)</span>
+                      <span className="text-sm">{formatBigNumber(analyticsData.tokens.largeHolderBalance)} JUST ({((analyticsData.tokens.largeHolderBalance / analyticsData.tokens.totalSupply) * 100).toFixed(0)}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-purple-500 h-2 rounded-full" style={{ width: `${(analyticsData.tokens.largeHolderBalance / analyticsData.tokens.totalSupply) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Treasury</span>
+                      <span className="text-sm">{formatBigNumber(analyticsData.tokens.treasuryBalance)} JUST ({((analyticsData.tokens.treasuryBalance / analyticsData.tokens.totalSupply) * 100).toFixed(0)}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(analyticsData.tokens.treasuryBalance / analyticsData.tokens.totalSupply) * 100}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+                
+                <h4 className="font-medium mb-2">Gini Coefficient: {(analyticsData.tokens.giniCoefficient / 10000).toFixed(2)}</h4>
+                <p className="text-sm text-gray-500 mb-4">Represents the inequality of token distribution (0 = perfect equality, 1 = perfect inequality)</p>
+              </>
+            )}
+            
+            {selectedMetric === 'timelock' && analyticsData.timelock && (
+              <>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Timelock Analytics</h3>
+                
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Total Transactions</p>
+                    <p className="text-2xl font-bold">{analyticsData.timelock.totalTransactions.toString()}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Executed</p>
+                    <p className="text-2xl font-bold">{analyticsData.timelock.executedTransactions.toString()}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Pending</p>
+                    <p className="text-2xl font-bold">{analyticsData.timelock.pendingTransactions.toString()}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg">
+                    <p className="text-sm text-gray-500">Canceled</p>
+                    <p className="text-2xl font-bold">{analyticsData.timelock.canceledTransactions.toString()}</p>
+                  </div>
+                </div>
+                
+                <h4 className="font-medium mb-2">Threat Level Distribution</h4>
+                <div className="space-y-3 mb-6">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Low Threat</span>
+                      <span className="text-sm">{analyticsData.timelock.lowThreatCount.toString()} ({analyticsData.timelock.totalTransactions > 0 ? ((analyticsData.timelock.lowThreatCount / analyticsData.timelock.totalTransactions) * 100).toFixed(0) : 0}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${analyticsData.timelock.totalTransactions > 0 ? (analyticsData.timelock.lowThreatCount / analyticsData.timelock.totalTransactions) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Medium Threat</span>
+                      <span className="text-sm">{analyticsData.timelock.mediumThreatCount.toString()} ({analyticsData.timelock.totalTransactions > 0 ? ((analyticsData.timelock.mediumThreatCount / analyticsData.timelock.totalTransactions) * 100).toFixed(0) : 0}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-yellow-500 h-2 rounded-full" style={{ width: `${analyticsData.timelock.totalTransactions > 0 ? (analyticsData.timelock.mediumThreatCount / analyticsData.timelock.totalTransactions) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">High Threat</span>
+                      <span className="text-sm">{analyticsData.timelock.highThreatCount.toString()} ({analyticsData.timelock.totalTransactions > 0 ? ((analyticsData.timelock.highThreatCount / analyticsData.timelock.totalTransactions) * 100).toFixed(0) : 0}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-orange-500 h-2 rounded-full" style={{ width: `${analyticsData.timelock.totalTransactions > 0 ? (analyticsData.timelock.highThreatCount / analyticsData.timelock.totalTransactions) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Critical Threat</span>
+                      <span className="text-sm">{analyticsData.timelock.criticalThreatCount.toString()} ({analyticsData.timelock.totalTransactions > 0 ? ((analyticsData.timelock.criticalThreatCount / analyticsData.timelock.totalTransactions) * 100).toFixed(0) : 0}%)</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-red-500 h-2 rounded-full" style={{ width: `${analyticsData.timelock.totalTransactions > 0 ? (analyticsData.timelock.criticalThreatCount / analyticsData.timelock.totalTransactions) * 100 : 0}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+                
+                <h4 className="font-medium mb-2">Avg. Execution Delays</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                  <div className="p-4 bg-gray-50 rounded-lg text-center">
+                    <p className="text-sm text-gray-500">Low Threat</p>
+                    <p className="text-xl font-bold">{formatTime(analyticsData.timelock.avgLowThreatDelay)}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg text-center">
+                    <p className="text-sm text-gray-500">Medium Threat</p>
+                    <p className="text-xl font-bold">{formatTime(analyticsData.timelock.avgMediumThreatDelay)}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg text-center">
+                    <p className="text-sm text-gray-500">High Threat</p>
+                    <p className="text-xl font-bold">{formatTime(analyticsData.timelock.avgHighThreatDelay)}</p>
+                  </div>
+                  <div className="p-4 bg-gray-50 rounded-lg text-center">
+                    <p className="text-sm text-gray-500">Critical Threat</p>
+                    <p className="text-xl font-bold">{formatTime(analyticsData.timelock.avgCriticalThreatDelay)}</p>
+                  </div>
+                </div>
+              </>
+            )}
+            
+            {selectedMetric === 'health' && analyticsData.health && (
+              <>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Governance Health Score</h3>
+                
+                <div className="flex justify-center mb-6">
+                  <div className="w-40 h-40 rounded-full border-8 border-indigo-500 flex items-center justify-center">
+                    <span className="text-4xl font-bold text-indigo-600">{analyticsData.health[0].toString()}</span>
+                  </div>
+                </div>
+                
+                <h4 className="font-medium mb-2">Health Score Breakdown</h4>
+                <div className="space-y-3 mb-6">
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Participation Score</span>
+                      <span className="text-sm">{analyticsData.health[1][0].toString()}/20</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(analyticsData.health[1][0] / 20) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Delegation Score</span>
+                      <span className="text-sm">{analyticsData.health[1][1].toString()}/20</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(analyticsData.health[1][1] / 20) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Activity Score</span>
+                      <span className="text-sm">{analyticsData.health[1][2].toString()}/20</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(analyticsData.health[1][2] / 20) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Execution Score</span>
+                      <span className="text-sm">{analyticsData.health[1][3].toString()}/20</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(analyticsData.health[1][3] / 20) * 100}%` }}></div>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="flex justify-between mb-1">
+                      <span className="font-medium">Threat Diversity Score</span>
+                      <span className="text-sm">{analyticsData.health[1][4].toString()}/20</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div className="bg-green-500 h-2 rounded-full" style={{ width: `${(analyticsData.health[1][4] / 20) * 100}%` }}></div>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </>
         )}
       </div>
@@ -1151,9 +1566,62 @@ const AnalyticsTab = () => {
 };
 
 // Admin Tab Component (Role-restricted)
-const AdminTab = () => {
+const AdminTab = ({ contracts }) => {
   const [selectedSection, setSelectedSection] = useState('governance');
+  const [governanceParams, setGovernanceParams] = useState({
+    votingDuration: '',
+    quorum: '',
+    timelockDelay: '',
+    proposalThreshold: '',
+    proposalStake: '',
+    defeatedRefund: '',
+    canceledRefund: '',
+    expiredRefund: ''
+  });
+  const [loading, setLoading] = useState(false);
   
+  // Load initial parameters
+  useEffect(() => {
+    const loadParams = async () => {
+      if (!contracts.governance) return;
+      
+      setLoading(true);
+      try {
+        const params = await contracts.governance.govParams();
+        setGovernanceParams({
+          votingDuration: params.votingDuration.toString(),
+          quorum: formatBigNumber(params.quorum),
+          timelockDelay: params.timelockDelay.toString(),
+          proposalThreshold: formatBigNumber(params.proposalCreationThreshold),
+          proposalStake: formatBigNumber(params.proposalStake),
+          defeatedRefund: params.defeatedRefundPercentage.toString(),
+          canceledRefund: params.canceledRefundPercentage.toString(),
+          expiredRefund: params.expiredRefundPercentage.toString()
+        });
+      } catch (error) {
+        console.error("Error loading governance parameters:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    
+    loadParams();
+  }, [contracts.governance]);
+  
+  // Helper to format time in seconds to readable format
+  function formatTime(seconds) {
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    
+    if (days > 0) {
+      return `${days} day${days > 1 ? 's' : ''}${hours > 0 ? ` ${hours} hr${hours > 1 ? 's' : ''}` : ''}`;
+    } else if (hours > 0) {
+      return `${hours} hour${hours > 1 ? 's' : ''}`;
+    } else {
+      return 'Less than an hour';
+    }
+  }
+
   return (
     <div>
       <div className="mb-6">
@@ -1184,516 +1652,159 @@ const AdminTab = () => {
       
       {/* Admin content */}
       <div className="bg-white p-6 rounded-lg shadow">
-        {selectedSection === 'governance' && (
+        {loading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-indigo-500"></div>
+          </div>
+        ) : (
           <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Governance Parameters</h3>
-            
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Voting Duration (in seconds)</label>
-                <div className="flex space-x-2">
-                  <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="604800" />
-                  <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                    Update
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Current: 7 days (604800 seconds)</p>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Quorum Requirement (in tokens)</label>
-                <div className="flex space-x-2">
-                  <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="100000" />
-                  <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                    Update
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Current: 100,000 JUST (10% of total supply)</p>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Timelock Delay (in seconds)</label>
-                <div className="flex space-x-2">
-                  <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="86400" />
-                  <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                    Update
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Current: 1 day (86400 seconds)</p>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Proposal Creation Threshold (in tokens)</label>
-                <div className="flex space-x-2">
-                  <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="10000" />
-                  <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                    Update
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Current: 10,000 JUST (1% of total supply)</p>
-              </div>
-              
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Proposal Stake (in tokens)</label>
-                <div className="flex space-x-2">
-                  <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="1000" />
-                  <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                    Update
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-1">Current: 1,000 JUST (10% of threshold)</p>
-              </div>
-              
-              <div className="pt-4 border-t border-gray-200 grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Defeated Refund %</label>
-                  <div className="flex space-x-2">
-                    <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="50" min="0" max="100" />
-                    <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                      Set
-                    </button>
-                  </div>
-                </div>
+            {selectedSection === 'governance' && (
+              <>
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Governance Parameters</h3>
                 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Canceled Refund %</label>
-                  <div className="flex space-x-2">
-                    <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="100" min="0" max="100" />
-                    <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                      Set
-                    </button>
-                  </div>
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Expired Refund %</label>
-                  <div className="flex space-x-2">
-                    <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="25" min="0" max="100" />
-                    <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                      Set
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </>
-        )}
-        
-        {selectedSection === 'roles' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Role Management</h3>
-            
-            <div className="mb-6">
-              <div className="flex justify-between items-center mb-2">
-                <h4 className="font-medium">Grant Role</h4>
-              </div>
-              <div className="flex space-x-2">
-                <select className="flex-1 rounded-md border border-gray-300 p-2">
-                  <option value="">Select Role</option>
-                  <option value="admin">Admin</option>
-                  <option value="guardian">Guardian</option>
-                  <option value="proposer">Proposer</option>
-                  <option value="executor">Executor</option>
-                  <option value="minter">Minter</option>
-                  <option value="analytics">Analytics</option>
-                </select>
-                <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Address" />
-                <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                  Grant
-                </button>
-              </div>
-            </div>
-            
-            <div className="mb-6">
-              <div className="flex justify-between items-center mb-2">
-                <h4 className="font-medium">Revoke Role</h4>
-              </div>
-              <div className="flex space-x-2">
-                <select className="flex-1 rounded-md border border-gray-300 p-2">
-                  <option value="">Select Role</option>
-                  <option value="admin">Admin</option>
-                  <option value="guardian">Guardian</option>
-                  <option value="proposer">Proposer</option>
-                  <option value="executor">Executor</option>
-                  <option value="minter">Minter</option>
-                  <option value="analytics">Analytics</option>
-                </select>
-                <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Address" />
-                <button className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md">
-                  Revoke
-                </button>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Current Role Assignments</h4>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead>
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Address</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {[
-                    { role: 'Admin', address: '0xabc...123' },
-                    { role: 'Guardian', address: '0xabc...123' },
-                    { role: 'Guardian', address: '0xdef...456' },
-                    { role: 'Proposer', address: '0xabc...123' },
-                    { role: 'Proposer', address: '0xghi...789' },
-                    { role: 'Analytics', address: '0xdef...456' }
-                  ].map((item, idx) => (
-                    <tr key={idx}>
-                      <td className="px-4 py-2 whitespace-nowrap">{item.role}</td>
-                      <td className="px-4 py-2 whitespace-nowrap">{item.address}</td>
-                      <td className="px-4 py-2 whitespace-nowrap text-right">
-                        <button className="text-red-600 hover:text-red-800 text-sm">Revoke</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-        
-        {selectedSection === 'security' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Security Settings</h3>
-            
-            <div className="mb-6">
-              <div className="flex justify-between items-center mb-2">
-                <h4 className="font-medium">Update Function Selector Permission</h4>
-              </div>
-              <div className="flex space-x-2 mb-4">
-                <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Function Selector (e.g., 0xa9059cbb)" />
-                <select className="rounded-md border border-gray-300 p-2">
-                  <option value="true">Allow</option>
-                  <option value="false">Disallow</option>
-                </select>
-                <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                  Update
-                </button>
-              </div>
-              
-              <div className="flex justify-between items-center mb-2">
-                <h4 className="font-medium">Update Target Address Permission</h4>
-              </div>
-              <div className="flex space-x-2">
-                <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Target Address" />
-                <select className="rounded-md border border-gray-300 p-2">
-                  <option value="true">Allow</option>
-                  <option value="false">Disallow</option>
-                </select>
-                <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                  Update
-                </button>
-              </div>
-            </div>
-            
-            <h4 className="font-medium mb-2">Allowed Function Selectors</h4>
-            <div className="overflow-x-auto mb-6">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead>
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Selector</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Function Name</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {[
-                    { selector: '0xa9059cbb', name: 'transfer(address,uint256)' },
-                    { selector: '0x095ea7b3', name: 'approve(address,uint256)' },
-                    { selector: '0x23b872dd', name: 'transferFrom(address,address,uint256)' }
-                  ].map((item, idx) => (
-                    <tr key={idx}>
-                      <td className="px-4 py-2 whitespace-nowrap">{item.selector}</td>
-                      <td className="px-4 py-2 whitespace-nowrap">{item.name}</td>
-                      <td className="px-4 py-2 whitespace-nowrap text-right">
-                        <button className="text-red-600 hover:text-red-800 text-sm">Remove</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            
-            <h4 className="font-medium mb-2">Allowed Target Addresses</h4>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-gray-200">
-                <thead>
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Address</th>
-                    <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Description</th>
-                    <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-200">
-                  {[
-                    { address: '0xabc...123', desc: 'Main Treasury' },
-                    { address: '0xdef...456', desc: 'Development Grants Multisig' },
-                    { address: '0xghi...789', desc: 'USDC Token Contract' }
-                  ].map((item, idx) => (
-                    <tr key={idx}>
-                      <td className="px-4 py-2 whitespace-nowrap">{item.address}</td>
-                      <td className="px-4 py-2 whitespace-nowrap">{item.desc}</td>
-                      <td className="px-4 py-2 whitespace-nowrap text-right">
-                        <button className="text-red-600 hover:text-red-800 text-sm">Remove</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </>
-        )}
-        
-        {selectedSection === 'timelock' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Timelock Settings</h3>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-              <div>
-                <h4 className="font-medium mb-2">Timelock Delays</h4>
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Minimum Delay (seconds)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Voting Duration (in seconds)</label>
                     <div className="flex space-x-2">
-                      <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="86400" />
+                      <input 
+                        type="number" 
+                        className="flex-1 rounded-md border border-gray-300 p-2" 
+                        value={governanceParams.votingDuration}
+                        onChange={(e) => setGovernanceParams({...governanceParams, votingDuration: e.target.value})}
+                      />
                       <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
                         Update
                       </button>
                     </div>
-                    <p className="text-xs text-gray-500 mt-1">Current: 1 day (86400 seconds)</p>
+                    <p className="text-xs text-gray-500 mt-1">Current: {formatTime(governanceParams.votingDuration)} ({governanceParams.votingDuration} seconds)</p>
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Maximum Delay (seconds)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Quorum Requirement (in tokens)</label>
                     <div className="flex space-x-2">
-                      <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="2592000" />
+                      <input 
+                        type="number" 
+                        className="flex-1 rounded-md border border-gray-300 p-2" 
+                        value={governanceParams.quorum}
+                        onChange={(e) => setGovernanceParams({...governanceParams, quorum: e.target.value})}
+                      />
                       <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
                         Update
                       </button>
                     </div>
-                    <p className="text-xs text-gray-500 mt-1">Current: 30 days (2592000 seconds)</p>
+                    <p className="text-xs text-gray-500 mt-1">Current: {governanceParams.quorum} JUST</p>
                   </div>
                   
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Grace Period (seconds)</label>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Timelock Delay (in seconds)</label>
                     <div className="flex space-x-2">
-                      <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="1209600" />
+                      <input 
+                        type="number" 
+                        className="flex-1 rounded-md border border-gray-300 p-2" 
+                        value={governanceParams.timelockDelay}
+                        onChange={(e) => setGovernanceParams({...governanceParams, timelockDelay: e.target.value})}
+                      />
                       <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
                         Update
                       </button>
                     </div>
-                    <p className="text-xs text-gray-500 mt-1">Current: 14 days (1209600 seconds)</p>
+                    <p className="text-xs text-gray-500 mt-1">Current: {formatTime(governanceParams.timelockDelay)} ({governanceParams.timelockDelay} seconds)</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Proposal Creation Threshold (in tokens)</label>
+                    <div className="flex space-x-2">
+                      <input 
+                        type="number" 
+                        className="flex-1 rounded-md border border-gray-300 p-2" 
+                        value={governanceParams.proposalThreshold}
+                        onChange={(e) => setGovernanceParams({...governanceParams, proposalThreshold: e.target.value})}
+                      />
+                      <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
+                        Update
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Current: {governanceParams.proposalThreshold} JUST</p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Proposal Stake (in tokens)</label>
+                    <div className="flex space-x-2">
+                      <input 
+                        type="number" 
+                        className="flex-1 rounded-md border border-gray-300 p-2" 
+                        value={governanceParams.proposalStake}
+                        onChange={(e) => setGovernanceParams({...governanceParams, proposalStake: e.target.value})}
+                      />
+                      <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
+                        Update
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Current: {governanceParams.proposalStake} JUST</p>
+                  </div>
+                  
+                  <div className="pt-4 border-t border-gray-200 grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Defeated Refund %</label>
+                      <div className="flex space-x-2">
+                        <input 
+                          type="number" 
+                          className="flex-1 rounded-md border border-gray-300 p-2" 
+                          min="0" 
+                          max="100" 
+                          value={governanceParams.defeatedRefund}
+                          onChange={(e) => setGovernanceParams({...governanceParams, defeatedRefund: e.target.value})}
+                        />
+                        <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
+                          Set
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Canceled Refund %</label>
+                      <div className="flex space-x-2">
+                        <input 
+                          type="number" 
+                          className="flex-1 rounded-md border border-gray-300 p-2" 
+                          min="0" 
+                          max="100" 
+                          value={governanceParams.canceledRefund}
+                          onChange={(e) => setGovernanceParams({...governanceParams, canceledRefund: e.target.value})}
+                        />
+                        <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
+                          Set
+                        </button>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">Expired Refund %</label>
+                      <div className="flex space-x-2">
+                        <input 
+                          type="number" 
+                          className="flex-1 rounded-md border border-gray-300 p-2" 
+                          min="0" 
+                          max="100" 
+                          value={governanceParams.expiredRefund}
+                          onChange={(e) => setGovernanceParams({...governanceParams, expiredRefund: e.target.value})}
+                        />
+                        <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
+                          Set
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
-              
-              <div>
-                <h4 className="font-medium mb-2">Threat Level Delays</h4>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Low Threat (seconds)</label>
-                    <div className="flex space-x-2">
-                      <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="86400" />
-                      <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                        Update
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Current: 1 day (86400 seconds)</p>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Medium Threat (seconds)</label>
-                    <div className="flex space-x-2">
-                      <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="259200" />
-                      <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                        Update
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Current: 3 days (259200 seconds)</p>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">High Threat (seconds)</label>
-                    <div className="flex space-x-2">
-                      <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="604800" />
-                      <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                        Update
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Current: 7 days (604800 seconds)</p>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Critical Threat (seconds)</label>
-                    <div className="flex space-x-2">
-                      <input type="number" className="flex-1 rounded-md border border-gray-300 p-2" defaultValue="1209600" />
-                      <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                        Update
-                      </button>
-                    </div>
-                    <p className="text-xs text-gray-500 mt-1">Current: 14 days (1209600 seconds)</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+              </>
+            )}
             
-            <h4 className="font-medium mb-2">Set Threat Level for Function</h4>
-            <div className="flex space-x-2 mb-6">
-              <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Function Selector (e.g., 0xa9059cbb)" />
-              <select className="rounded-md border border-gray-300 p-2">
-                <option value="0">Low</option>
-                <option value="1">Medium</option>
-                <option value="2">High</option>
-                <option value="3">Critical</option>
-              </select>
-              <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                Set Level
-              </button>
-            </div>
-            
-            <h4 className="font-medium mb-2">Set Threat Level for Address</h4>
-            <div className="flex space-x-2">
-              <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Target Address" />
-              <select className="rounded-md border border-gray-300 p-2">
-                <option value="0">Low</option>
-                <option value="1">Medium</option>
-                <option value="2">High</option>
-                <option value="3">Critical</option>
-              </select>
-              <button className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md">
-                Set Level
-              </button>
-            </div>
-          </>
-        )}
-        
-        {selectedSection === 'emergency' && (
-          <>
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Emergency Controls</h3>
-            
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-              <div className="flex items-start">
-                <div className="flex-shrink-0">
-                  <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                  </svg>
-                </div>
-                <div className="ml-3">
-                  <h3 className="text-sm font-medium text-red-800">Warning</h3>
-                  <div className="mt-2 text-sm text-red-700">
-                    <p>
-                      These controls are for emergency use only. They can significantly impact DAO operations and should be used with caution.
-                    </p>
-                  </div>
-                </div>
+            {/* Other admin sections would be implemented similarly */}
+            {selectedSection !== 'governance' && (
+              <div className="py-4 text-center text-gray-500">
+                This section is under construction
               </div>
-            </div>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="border border-gray-200 rounded-lg p-4">
-                <h4 className="font-medium mb-4">Pause/Unpause Contracts</h4>
-                <div className="space-y-4">
-                  <div>
-                    <div className="flex justify-between mb-2">
-                      <span>Token Contract</span>
-                      <span className="text-green-600">Active</span>
-                    </div>
-                    <button className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-md">
-                      Pause Token Contract
-                    </button>
-                  </div>
-                  
-                  <div>
-                    <div className="flex justify-between mb-2">
-                      <span>Governance Contract</span>
-                      <span className="text-green-600">Active</span>
-                    </div>
-                    <button className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-md">
-                      Pause Governance Contract
-                    </button>
-                  </div>
-                  
-                  <div>
-                    <div className="flex justify-between mb-2">
-                      <span>Timelock Contract</span>
-                      <span className="text-green-600">Active</span>
-                    </div>
-                    <button className="w-full bg-red-600 hover:bg-red-700 text-white py-2 rounded-md">
-                      Pause Timelock Contract
-                    </button>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="border border-gray-200 rounded-lg p-4">
-                <h4 className="font-medium mb-4">Rescue Functions</h4>
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Rescue ETH</label>
-                    <button className="w-full bg-orange-600 hover:bg-orange-700 text-white py-2 rounded-md">
-                      Rescue ETH from Contract
-                    </button>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Rescue ERC20 Tokens</label>
-                    <div className="flex space-x-2 mb-2">
-                      <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Token Address" />
-                      <button className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-md">
-                        Rescue
-                      </button>
-                    </div>
-                  </div>
-                  
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">Execute Expired Transaction</label>
-                    <div className="flex space-x-2">
-                      <input type="text" className="flex-1 rounded-md border border-gray-300 p-2" placeholder="Transaction Hash" />
-                      <button className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-md">
-                        Execute
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              
-              <div className="border border-gray-200 rounded-lg p-4 md:col-span-2">
-                <h4 className="font-medium mb-4">Cancel Pending Transactions</h4>
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-gray-200">
-                    <thead>
-                      <tr>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tx Hash</th>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Target</th>
-                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ETA</th>
-                        <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {[
-                        { hash: '0x1234...5678', target: '0xabc...123', eta: 'Mar 25, 2023 14:30' },
-                        { hash: '0x8765...4321', target: '0xdef...456', eta: 'Mar 26, 2023 09:15' }
-                      ].map((tx, idx) => (
-                        <tr key={idx}>
-                          <td className="px-4 py-2 whitespace-nowrap">{tx.hash}</td>
-                          <td className="px-4 py-2 whitespace-nowrap">{tx.target}</td>
-                          <td className="px-4 py-2 whitespace-nowrap">{tx.eta}</td>
-                          <td className="px-4 py-2 whitespace-nowrap text-right">
-                            <button className="text-red-600 hover:text-red-800 text-sm">Cancel</button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
+            )}
           </>
         )}
       </div>
@@ -1706,18 +1817,37 @@ function getStatusColor(status) {
   switch (status) {
     case 'active':
       return 'bg-yellow-100 text-yellow-800';
-    case 'passed':
+    case 'succeeded':
       return 'bg-green-100 text-green-800';
     case 'pending':
+    case 'queued':
       return 'bg-blue-100 text-blue-800';
     case 'executed':
       return 'bg-indigo-100 text-indigo-800';
     case 'defeated':
       return 'bg-red-100 text-red-800';
     case 'canceled':
+    case 'expired':
       return 'bg-gray-100 text-gray-800';
     default:
       return 'bg-gray-100 text-gray-800';
+  }
+}
+
+// Helper function to format time in seconds to readable format
+function formatTime(seconds) {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  
+  if (days > 0) {
+    return `${days} day${days > 1 ? 's' : ''}${hours > 0 ? ` ${hours} hr${hours > 1 ? 's' : ''}` : ''}`;
+  } else if (hours > 0) {
+    return `${hours} hour${hours > 1 ? 's' : ''}`;
+  } else if (minutes > 0) {
+    return `${minutes} minute${minutes > 1 ? 's' : ''}`;
+  } else {
+    return `${seconds} second${seconds !== 1 ? 's' : ''}`;
   }
 }
 

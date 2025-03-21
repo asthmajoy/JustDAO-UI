@@ -3,7 +3,7 @@ import { useWeb3 } from '../contexts/Web3Context';
 import { VOTE_TYPES } from '../utils/constants';
 
 export function useVoting() {
-  const { contracts } = useWeb3();
+  const { contracts, account, isConnected, contractsReady } = useWeb3();
   const [voting, setVoting] = useState({
     loading: false,
     error: null,
@@ -11,9 +11,8 @@ export function useVoting() {
   });
 
   const castVote = async (proposalId, voteType) => {
-    if (!contracts.governance) {
-      throw new Error("Governance contract not initialized");
-    }
+    if (!isConnected || !contractsReady) throw new Error("Not connected");
+    if (!contracts.governance) throw new Error("Governance contract not initialized");
     
     try {
       setVoting({ loading: true, error: null, success: false });
@@ -24,10 +23,10 @@ export function useVoting() {
       }
       
       const tx = await contracts.governance.castVote(proposalId, voteType);
-      const receipt = await tx.wait();
+      await tx.wait();
       
       setVoting({ loading: false, error: null, success: true });
-      return receipt;
+      return true;
     } catch (err) {
       console.error("Error casting vote:", err);
       setVoting({ loading: false, error: err.message, success: false });
@@ -35,10 +34,9 @@ export function useVoting() {
     }
   };
   
-  const hasVoted = async (proposalId, account) => {
-    if (!contracts.governance || !account) {
-      return false;
-    }
+  const hasVoted = async (proposalId) => {
+    if (!isConnected || !contractsReady || !account) return false;
+    if (!contracts.governance) return false;
     
     try {
       // Check if user has voted on this proposal
@@ -50,12 +48,16 @@ export function useVoting() {
     }
   };
   
-  const getVotingPower = async (account, snapshotId) => {
-    if (!contracts.token || !account) {
-      return 0;
-    }
+  const getVotingPower = async (snapshotId) => {
+    if (!isConnected || !contractsReady || !account) return 0;
+    if (!contracts.token) return 0;
     
     try {
+      // If no snapshot ID is provided, use the current one
+      if (!snapshotId) {
+        snapshotId = await contracts.token.getCurrentSnapshotId();
+      }
+      
       const votingPower = await contracts.token.getEffectiveVotingPower(account, snapshotId);
       return votingPower;
     } catch (err) {

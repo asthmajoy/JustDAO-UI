@@ -1,17 +1,26 @@
 import React from 'react';
-import JustDAODashboard from './components/JustDAODashboard';
 import { useWeb3 } from './contexts/Web3Context';
 import { useAuth } from './contexts/AuthContext';
+import JustDAODashboard from './components/JustDAODashboard';
+import Loader from './components/Loader';
 
 function App() {
-  const { isConnected, connectWallet } = useWeb3();
-  const { user } = useAuth();
+  const { isConnected, connectWallet, contractsReady } = useWeb3();
+  const { loading: authLoading } = useAuth();
+
+  if (isConnected && (!contractsReady || authLoading)) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <Loader size="large" text="Loading DAO data..." />
+      </div>
+    );
+  }
 
   return (
     <div className="App">
       {!isConnected ? (
         <div className="min-h-screen flex items-center justify-center bg-gray-50">
-          <div className="max-w-md w-full p-6">
+          <div className="max-w-md w-full p-6 bg-white rounded-lg shadow-lg">
             <div className="text-center mb-8">
               <h1 className="text-3xl font-bold text-indigo-600">JustDAO</h1>
               <p className="mt-2 text-gray-600">Connect your wallet to access the DAO dashboard</p>

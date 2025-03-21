@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { useWeb3 } from './Web3Context';
-import { ROLES } from '../utils/constants';
 
 const AuthContext = createContext();
 
@@ -10,7 +9,7 @@ export function useAuth() {
 }
 
 export function AuthProvider({ children }) {
-  const { isConnected, account, contracts } = useWeb3();
+  const { isConnected, account, contracts, contractsReady } = useWeb3();
   const [user, setUser] = useState({
     address: '',
     roles: ['user'],
@@ -23,7 +22,7 @@ export function AuthProvider({ children }) {
 
   useEffect(() => {
     async function fetchUserData() {
-      if (isConnected && account && contracts.token && contracts.governance) {
+      if (isConnected && account && contractsReady && contracts.token && contracts.governance) {
         try {
           setLoading(true);
           
@@ -44,18 +43,40 @@ export function AuthProvider({ children }) {
           const roles = ['user'];
           
           // Check for admin role
-          const isAdmin = await contracts.governance.hasRole(
-            ethers.utils.keccak256(ethers.utils.toUtf8Bytes(ROLES.ADMIN_ROLE)), 
-            account
-          );
-          if (isAdmin) roles.push('admin');
+          try {
+            const adminRoleHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("ADMIN_ROLE"));
+            const isAdmin = await contracts.governance.hasRole(adminRoleHash, account);
+            if (isAdmin) roles.push('admin');
+          } catch (error) {
+            console.error("Error checking admin role:", error);
+          }
           
           // Check for analytics role
-          const isAnalytics = await contracts.governance.hasRole(
-            ethers.utils.keccak256(ethers.utils.toUtf8Bytes(ROLES.ANALYTICS_ROLE)), 
-            account
-          );
-          if (isAnalytics) roles.push('analytics');
+          try {
+            const analyticsRoleHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("ANALYTICS_ROLE"));
+            const isAnalytics = await contracts.governance.hasRole(analyticsRoleHash, account);
+            if (isAnalytics) roles.push('analytics');
+          } catch (error) {
+            console.error("Error checking analytics role:", error);
+          }
+          
+          // Check for guardian role
+          try {
+            const guardianRoleHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("GUARDIAN_ROLE"));
+            const isGuardian = await contracts.governance.hasRole(guardianRoleHash, account);
+            if (isGuardian) roles.push('guardian');
+          } catch (error) {
+            console.error("Error checking guardian role:", error);
+          }
+          
+          // Check for governance role
+          try {
+            const governanceRoleHash = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("GOVERNANCE_ROLE"));
+            const isGovernance = await contracts.governance.hasRole(governanceRoleHash, account);
+            if (isGovernance) roles.push('governance');
+          } catch (error) {
+            console.error("Error checking governance role:", error);
+          }
           
           // Update user state
           setUser({
@@ -63,7 +84,7 @@ export function AuthProvider({ children }) {
             roles,
             balance: ethers.utils.formatEther(balance),
             votingPower: ethers.utils.formatEther(votingPower),
-            delegate,
+            delegate: delegate,
             lockedTokens: ethers.utils.formatEther(lockedTokens)
           });
           
@@ -72,11 +93,22 @@ export function AuthProvider({ children }) {
         } finally {
           setLoading(false);
         }
+      } else {
+        // If not connected, reset user to default state
+        setUser({
+          address: '',
+          roles: ['user'],
+          balance: 0,
+          votingPower: 0,
+          delegate: '',
+          lockedTokens: 0
+        });
+        setLoading(false);
       }
     }
     
     fetchUserData();
-  }, [isConnected, account, contracts]);
+  }, [isConnected, account, contracts, contractsReady]);
 
   const hasRole = (role) => {
     return user.roles.includes(role);

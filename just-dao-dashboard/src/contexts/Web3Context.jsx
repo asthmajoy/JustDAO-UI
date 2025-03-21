@@ -19,6 +19,7 @@ export function Web3Provider({ children }) {
   const [account, setAccount] = useState('');
   const [isConnected, setIsConnected] = useState(false);
   const [networkId, setNetworkId] = useState(null);
+  const [isCorrectNetwork, setIsCorrectNetwork] = useState(false);
   const [contracts, setContracts] = useState({
     token: null,
     governance: null,
@@ -26,34 +27,154 @@ export function Web3Provider({ children }) {
     analyticsHelper: null,
     daoHelper: null
   });
+  const [contractsReady, setContractsReady] = useState(false);
+  const [contractErrors, setContractErrors] = useState({});
+  const [refreshCounter, setRefreshCounter] = useState(0);
+  
+  // Expected network is Sepolia (chainId 11155111)
+  const EXPECTED_NETWORK_ID = 11155111;
+  const NETWORK_NAME = "Sepolia";
+
+  // Check if wallet is already connected on page load
+  useEffect(() => {
+    const checkConnection = async () => {
+      if (window.ethereum) {
+        try {
+          // Check if already connected
+          const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+          if (accounts.length > 0) {
+            // Get network info
+            const web3Provider = new ethers.providers.Web3Provider(window.ethereum);
+            const network = await web3Provider.getNetwork();
+            const chainId = network.chainId;
+            
+            setAccount(accounts[0]);
+            setProvider(web3Provider);
+            setSigner(web3Provider.getSigner());
+            setIsConnected(true);
+            setNetworkId(chainId);
+            setIsCorrectNetwork(chainId === EXPECTED_NETWORK_ID);
+            
+            // Initialize contracts
+            initializeContracts(web3Provider, web3Provider.getSigner());
+            
+            // Set up listeners
+            window.ethereum.on('accountsChanged', handleAccountsChanged);
+            window.ethereum.on('chainChanged', handleChainChanged);
+            
+            console.log("Connected to wallet:", accounts[0]);
+            console.log("Network:", network.name, "ChainId:", chainId);
+          }
+        } catch (error) {
+          console.error("Error checking wallet connection:", error);
+        }
+      }
+    };
+    
+    checkConnection();
+    
+    // Cleanup function
+    return () => {
+      if (window.ethereum) {
+        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        window.ethereum.removeListener('chainChanged', handleChainChanged);
+      }
+    };
+  }, []); // Empty dependency array - run once on mount
+
+  async function switchToCorrectNetwork() {
+    if (!window.ethereum) return false;
+    
+    try {
+      // Try to switch to the Sepolia network
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: '0x' + EXPECTED_NETWORK_ID.toString(16) }],
+      });
+      return true;
+    } catch (error) {
+      if (error.code === 4902) {
+        // Network not added to MetaMask, let's add it
+        try {
+          await window.ethereum.request({
+            method: 'wallet_addEthereumChain',
+            params: [
+              {
+                chainId: '0x' + EXPECTED_NETWORK_ID.toString(16),
+                chainName: 'Sepolia Test Network',
+                nativeCurrency: {
+                  name: 'Sepolia ETH',
+                  symbol: 'ETH',
+                  decimals: 18
+                },
+                rpcUrls: ['https://sepolia.infura.io/v3/'],
+                blockExplorerUrls: ['https://sepolia.etherscan.io/']
+              }
+            ],
+          });
+          return true;
+        } catch (addError) {
+          console.error("Error adding Sepolia network:", addError);
+          return false;
+        }
+      }
+      console.error("Error switching network:", error);
+      return false;
+    }
+  }
 
   async function connectWallet() {
     try {
       // Check if MetaMask is installed
       if (window.ethereum) {
+        // Reset any previous errors
+        setContractErrors({});
+        
         // Request account access
         const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        
+        // Get network info
         const web3Provider = new ethers.providers.Web3Provider(window.ethereum);
-        const web3Signer = web3Provider.getSigner();
-        const chainId = await web3Provider.getNetwork().then(network => network.chainId);
+        const network = await web3Provider.getNetwork();
+        const chainId = network.chainId;
+        
+        // Check if we're on the correct network
+        const correctNetwork = chainId === EXPECTED_NETWORK_ID;
+        setIsCorrectNetwork(correctNetwork);
+        
+        // If not on correct network, prompt to switch
+        if (!correctNetwork) {
+          const networkSwitched = await switchToCorrectNetwork();
+          if (!networkSwitched) {
+            alert(`Please switch to ${NETWORK_NAME} network to use this application.`);
+          }
+        }
         
         setAccount(accounts[0]);
         setProvider(web3Provider);
-        setSigner(web3Signer);
+        setSigner(web3Provider.getSigner());
         setIsConnected(true);
         setNetworkId(chainId);
         
-        initializeContracts(web3Provider, web3Signer);
+        // Initialize contracts
+        initializeContracts(web3Provider, web3Provider.getSigner());
         
         // Set up listeners
         window.ethereum.on('accountsChanged', handleAccountsChanged);
         window.ethereum.on('chainChanged', handleChainChanged);
+        
+        console.log("Connected to:", accounts[0]);
+        console.log("Network:", network.name, "ChainId:", chainId);
+        
+        return true;
       } else {
         console.error("MetaMask is not installed");
         alert("Please install MetaMask to use this application");
+        return false;
       }
     } catch (error) {
       console.error("Error connecting to wallet:", error);
+      return false;
     }
   }
 
@@ -62,58 +183,140 @@ export function Web3Provider({ children }) {
       // User has disconnected all accounts
       setIsConnected(false);
       setAccount('');
+      setContractsReady(false);
     } else {
       setAccount(accounts[0]);
+      // Refresh contract data with new account
+      if (provider) {
+        const signer = provider.getSigner();
+        setSigner(signer);
+        initializeContracts(provider, signer);
+      }
     }
   }
 
-  function handleChainChanged() {
+  function handleChainChanged(chainIdHex) {
+    const chainId = parseInt(chainIdHex, 16);
     // Reload the page when the chain changes
-    window.location.reload();
+    setNetworkId(chainId);
+    setIsCorrectNetwork(chainId === EXPECTED_NETWORK_ID);
+    
+    // If network changed, reinitialize contracts
+    if (provider && isConnected) {
+      const signer = provider.getSigner();
+      setSigner(signer);
+      initializeContracts(provider, signer);
+    }
+    
+    console.log("Network changed to:", chainId);
   }
 
   async function initializeContracts(provider, signer) {
     try {
-      const tokenContract = new ethers.Contract(
-        CONTRACT_ADDRESSES.token,
-        JustTokenABI.abi,
-        signer
-      );
+      setContractsReady(false);
+      const newContractErrors = {};
+      const newContracts = {};
       
-      const governanceContract = new ethers.Contract(
-        CONTRACT_ADDRESSES.governance,
-        JustGovernanceABI.abi,
-        signer
-      );
+      console.log("Initializing contracts with addresses:", CONTRACT_ADDRESSES);
       
-      const timelockContract = new ethers.Contract(
-        CONTRACT_ADDRESSES.timelock,
-        JustTimelockABI.abi,
-        signer
-      );
+      // Initialize token contract
+      try {
+        const tokenContract = new ethers.Contract(
+          CONTRACT_ADDRESSES.token,
+          JustTokenABI.abi,
+          signer
+        );
+        // Verify contract is accessible by calling a view function
+        await tokenContract.name();
+        newContracts.token = tokenContract;
+        console.log("Token contract initialized successfully");
+      } catch (error) {
+        console.error("Error initializing token contract:", error);
+        newContractErrors.token = error.message;
+      }
       
-      const analyticsHelperContract = new ethers.Contract(
-        CONTRACT_ADDRESSES.analyticsHelper,
-        JustAnalyticsHelperABI.abi,
-        signer
-      );
+      // Initialize governance contract
+      try {
+        const governanceContract = new ethers.Contract(
+          CONTRACT_ADDRESSES.governance,
+          JustGovernanceABI.abi,
+          signer
+        );
+        // Verify contract works
+        try {
+          // Try to call a view function to verify
+          await governanceContract.govParams();
+        } catch (verifyError) {
+          console.error("Error verifying governance contract:", verifyError);
+        }
+        newContracts.governance = governanceContract;
+        console.log("Governance contract initialized successfully");
+      } catch (error) {
+        console.error("Error initializing governance contract:", error);
+        newContractErrors.governance = error.message;
+      }
       
-      const daoHelperContract = new ethers.Contract(
-        CONTRACT_ADDRESSES.daoHelper,
-        JustDAOHelperABI.abi,
-        signer
-      );
+      // Initialize timelock contract
+      try {
+        const timelockContract = new ethers.Contract(
+          CONTRACT_ADDRESSES.timelock,
+          JustTimelockABI.abi,
+          signer
+        );
+        newContracts.timelock = timelockContract;
+        console.log("Timelock contract initialized successfully");
+      } catch (error) {
+        console.error("Error initializing timelock contract:", error);
+        newContractErrors.timelock = error.message;
+      }
       
-      setContracts({
-        token: tokenContract,
-        governance: governanceContract,
-        timelock: timelockContract,
-        analyticsHelper: analyticsHelperContract,
-        daoHelper: daoHelperContract
-      });
+      // Initialize analytics helper contract
+      try {
+        const analyticsHelperContract = new ethers.Contract(
+          CONTRACT_ADDRESSES.analyticsHelper,
+          JustAnalyticsHelperABI.abi,
+          signer
+        );
+        newContracts.analyticsHelper = analyticsHelperContract;
+        console.log("Analytics helper contract initialized successfully");
+      } catch (error) {
+        console.error("Error initializing analytics helper contract:", error);
+        newContractErrors.analyticsHelper = error.message;
+      }
+      
+      // Initialize DAO helper contract
+      try {
+        const daoHelperContract = new ethers.Contract(
+          CONTRACT_ADDRESSES.daoHelper,
+          JustDAOHelperABI.abi,
+          signer
+        );
+        newContracts.daoHelper = daoHelperContract;
+        console.log("DAO helper contract initialized successfully");
+      } catch (error) {
+        console.error("Error initializing DAO helper contract:", error);
+        newContractErrors.daoHelper = error.message;
+      }
+      
+      setContracts(newContracts);
+      setContractErrors(newContractErrors);
+      setContractsReady(Object.keys(newContractErrors).length === 0);
+      
+      // Set a refresh flag to trigger data reloads
+      setRefreshCounter(prev => prev + 1);
+      
+      return Object.keys(newContractErrors).length === 0;
     } catch (error) {
-      console.error("Error initializing contracts:", error);
+      console.error("Error in contract initialization:", error);
+      setContractErrors({global: error.message});
+      setContractsReady(false);
+      return false;
     }
+  }
+
+  async function refreshData() {
+    // Trigger a refresh of all data by incrementing the counter
+    setRefreshCounter(prev => prev + 1);
   }
 
   async function disconnectWallet() {
@@ -127,6 +330,8 @@ export function Web3Provider({ children }) {
       analyticsHelper: null,
       daoHelper: null
     });
+    setContractsReady(false);
+    setContractErrors({});
     
     // Remove listeners
     if (window.ethereum) {
@@ -141,9 +346,15 @@ export function Web3Provider({ children }) {
     account,
     isConnected,
     networkId,
+    isCorrectNetwork,
     contracts,
+    contractsReady,
+    contractErrors,
+    refreshCounter,
     connectWallet,
-    disconnectWallet
+    disconnectWallet,
+    refreshData,
+    switchToCorrectNetwork
   };
 
   return (
