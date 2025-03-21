@@ -1946,7 +1946,6 @@ const AnalyticsTab = ({ contracts }) => {
   );
 };
 
-
 // Helper function for status colors
 function getStatusColor(status) {
   switch (status) {
