@@ -1,14 +1,21 @@
+// useProposals.js - Enhanced hook for proposal creation and management
+
 import { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
 import { useWeb3 } from '../contexts/Web3Context';
 import { PROPOSAL_STATES, PROPOSAL_TYPES } from '../utils/constants';
 
 export function useProposals() {
-  const { contracts, account, isConnected, contractsReady } = useWeb3();
+  const { contracts, account, isConnected, contractsReady, refreshCounter } = useWeb3();
   const [proposals, setProposals] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tokenHolders, setTokenHolders] = useState([]);
+  const [createProposalStatus, setCreateProposalStatus] = useState({
+    isSubmitting: false,
+    error: null,
+    success: false
+  });
 
   const fetchProposals = useCallback(async () => {
     if (!isConnected || !contractsReady || !contracts.governance) {
@@ -47,6 +54,12 @@ export function useProposals() {
         try {
           console.log("Checking proposal ID:", i);
           const proposalState = await contracts.governance.getProposalState(i);
+          
+          // Limit requests to avoid rate limiting
+          if (i % 5 === 0 && i > 0) {
+            await new Promise(r => setTimeout(r, 300));
+          }
+          
           const proposalDetails = await contracts.governance._proposals(i);
           
           // Add proposer to unique proposers set
@@ -105,18 +118,10 @@ export function useProposals() {
       console.log("Found", proposalData.length, "proposals");
       setProposals(proposalData);
       
-      // Also get token holders
-      try {
-        // Use proposers as token holders
-        const tokenHolderAddresses = Array.from(uniqueProposers);
-        
-        // This is just a simplification to show token holders
-        // In a real implementation, you'd use an indexer or events to track all token holders
-        setTokenHolders(tokenHolderAddresses.length);
-        console.log("Found", tokenHolderAddresses.length, "token holders");
-      } catch (err) {
-        console.error("Error getting token holders:", err);
-      }
+      // Update token holders count
+      const tokenHolderAddresses = Array.from(uniqueProposers);
+      setTokenHolders(tokenHolderAddresses.length);
+      console.log("Found", tokenHolderAddresses.length, "token holders from proposals");
       
     } catch (err) {
       console.error("Error fetching proposals:", err);
@@ -127,10 +132,24 @@ export function useProposals() {
   }, [contracts, account, isConnected, contractsReady]);
 
   useEffect(() => {
-    fetchProposals();
-  }, [fetchProposals]);
+    if (isConnected && contractsReady) {
+      fetchProposals();
+    }
+  }, [fetchProposals, isConnected, contractsReady, refreshCounter]);
 
-  const createProposal = async (description, type, target, callData, amount, recipient, token, newThreshold, newQuorum, newVotingDuration, newTimelockDelay) => {
+  const createProposal = async (
+    description, 
+    type, 
+    target, 
+    callData, 
+    amount, 
+    recipient, 
+    token, 
+    newThreshold, 
+    newQuorum, 
+    newVotingDuration, 
+    newTimelockDelay
+  ) => {
     if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.governance) throw new Error("Governance contract not initialized");
     
@@ -151,6 +170,11 @@ export function useProposals() {
     try {
       setLoading(true);
       setError(null);
+      setCreateProposalStatus({
+        isSubmitting: true,
+        error: null,
+        success: false
+      });
       
       // Validate required fields based on proposal type
       if (type === PROPOSAL_TYPES.GENERAL) {
@@ -169,9 +193,9 @@ export function useProposals() {
       }
       
       // Convert string values to appropriate format
-      const amountBN = amount ? ethers.utils.parseEther(amount.toString()) : 0;
-      const newThresholdBN = newThreshold ? ethers.utils.parseEther(newThreshold.toString()) : 0;
-      const newQuorumBN = newQuorum ? ethers.utils.parseEther(newQuorum.toString()) : 0;
+      const amountBN = amount ? ethers.utils.parseEther(amount.toString()) : ethers.BigNumber.from(0);
+      const newThresholdBN = newThreshold ? ethers.utils.parseEther(newThreshold.toString()) : ethers.BigNumber.from(0);
+      const newQuorumBN = newQuorum ? ethers.utils.parseEther(newQuorum.toString()) : ethers.BigNumber.from(0);
       const newVotingDurationNum = newVotingDuration ? parseInt(newVotingDuration) : 0;
       const newTimelockDelayNum = newTimelockDelay ? parseInt(newTimelockDelay) : 0;
       
@@ -189,7 +213,15 @@ export function useProposals() {
         newTimelockDelayNum
       });
       
-      // Create the proposal
+      // Check user's balance first
+      const userBalance = await contracts.token.balanceOf(account);
+      const proposalThreshold = await contracts.governance.govParams();
+      
+      if (userBalance.lt(proposalThreshold.proposalCreationThreshold)) {
+        throw new Error(`Insufficient balance to create proposal. You need at least ${ethers.utils.formatEther(proposalThreshold.proposalCreationThreshold)} JUST tokens.`);
+      }
+      
+      // Create the proposal with an appropriate gas limit
       const tx = await contracts.governance.createProposal(
         description,
         type,
@@ -201,13 +233,22 @@ export function useProposals() {
         newThresholdBN,
         newQuorumBN,
         newVotingDurationNum,
-        newTimelockDelayNum
+        newTimelockDelayNum,
+        {
+          gasLimit: 1000000 // Provide enough gas
+        }
       );
       
       console.log("Proposal creation transaction sent:", tx.hash);
       
       const receipt = await tx.wait();
       console.log("Proposal creation confirmed:", receipt);
+      
+      setCreateProposalStatus({
+        isSubmitting: false,
+        error: null,
+        success: true
+      });
       
       // Refresh proposals list
       await fetchProposals();
@@ -216,6 +257,11 @@ export function useProposals() {
     } catch (err) {
       console.error("Error creating proposal:", err);
       setError("Failed to create proposal: " + err.message);
+      setCreateProposalStatus({
+        isSubmitting: false,
+        error: err.message,
+        success: false
+      });
       throw err;
     } finally {
       setLoading(false);
@@ -230,7 +276,24 @@ export function useProposals() {
       setLoading(true);
       setError(null);
       
-      const tx = await contracts.governance.cancelProposal(proposalId);
+      // Get the proposal first to check if the user is the proposer
+      const proposal = proposals.find(p => p.id === proposalId);
+      if (!proposal) throw new Error(`Proposal ${proposalId} not found`);
+      
+      // Check if the user is the proposer or has GUARDIAN role
+      if (proposal.proposer.toLowerCase() !== account.toLowerCase()) {
+        // Try to check if the user has GUARDIAN role
+        const guardianRole = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("GUARDIAN_ROLE"));
+        const hasGuardianRole = await contracts.governance.hasRole(guardianRole, account);
+        
+        if (!hasGuardianRole) {
+          throw new Error("Only the proposer or a guardian can cancel this proposal");
+        }
+      }
+      
+      const tx = await contracts.governance.cancelProposal(proposalId, {
+        gasLimit: 200000 // Provide enough gas
+      });
       await tx.wait();
       
       // Refresh proposals list
@@ -254,7 +317,9 @@ export function useProposals() {
       setLoading(true);
       setError(null);
       
-      const tx = await contracts.governance.queueProposal(proposalId);
+      const tx = await contracts.governance.queueProposal(proposalId, {
+        gasLimit: 500000 // Provide enough gas for queuing
+      });
       await tx.wait();
       
       // Refresh proposals list
@@ -278,7 +343,9 @@ export function useProposals() {
       setLoading(true);
       setError(null);
       
-      const tx = await contracts.governance.executeProposal(proposalId);
+      const tx = await contracts.governance.executeProposal(proposalId, {
+        gasLimit: 1000000 // Provide enough gas for execution
+      });
       await tx.wait();
       
       // Refresh proposals list
@@ -302,7 +369,17 @@ export function useProposals() {
       setLoading(true);
       setError(null);
       
-      const tx = await contracts.governance.claimPartialStakeRefund(proposalId);
+      // Verify the user is the proposer
+      const proposal = proposals.find(p => p.id === proposalId);
+      if (!proposal) throw new Error(`Proposal ${proposalId} not found`);
+      
+      if (proposal.proposer.toLowerCase() !== account.toLowerCase()) {
+        throw new Error("Only the proposer can claim a refund");
+      }
+      
+      const tx = await contracts.governance.claimPartialStakeRefund(proposalId, {
+        gasLimit: 200000 // Provide enough gas
+      });
       await tx.wait();
       
       // Refresh proposals list
@@ -372,6 +449,7 @@ export function useProposals() {
     loading,
     error,
     tokenHolders,
+    createProposalStatus,
     fetchProposals,
     createProposal,
     cancelProposal,

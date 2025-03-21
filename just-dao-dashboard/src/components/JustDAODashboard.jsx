@@ -98,6 +98,7 @@ const JustDAODashboard = () => {
       }
     };
     
+    
     loadDashboardData();
   }, [contracts, proposalsHook.proposals, user.balance]);
 

@@ -1,3 +1,5 @@
+// Web3Context.jsx - Enhanced version with better error handling and contract initialization
+
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { ethers } from 'ethers';
 import JustTokenABI from '../config/abis/JustTokenUpgradeable.json';
@@ -30,6 +32,7 @@ export function Web3Provider({ children }) {
   const [contractsReady, setContractsReady] = useState(false);
   const [contractErrors, setContractErrors] = useState({});
   const [refreshCounter, setRefreshCounter] = useState(0);
+  const [connectionError, setConnectionError] = useState(null);
   
   // Expected network is Sepolia (chainId 11155111)
   const EXPECTED_NETWORK_ID = 11155111;
@@ -67,6 +70,7 @@ export function Web3Provider({ children }) {
           }
         } catch (error) {
           console.error("Error checking wallet connection:", error);
+          setConnectionError("Error connecting to wallet. Please try again.");
         }
       }
     };
@@ -115,15 +119,18 @@ export function Web3Provider({ children }) {
           return true;
         } catch (addError) {
           console.error("Error adding Sepolia network:", addError);
+          setConnectionError("Failed to add Sepolia network to your wallet.");
           return false;
         }
       }
       console.error("Error switching network:", error);
+      setConnectionError("Failed to switch to Sepolia network.");
       return false;
     }
   }
 
   async function connectWallet() {
+    setConnectionError(null);
     try {
       // Check if MetaMask is installed
       if (window.ethereum) {
@@ -146,7 +153,8 @@ export function Web3Provider({ children }) {
         if (!correctNetwork) {
           const networkSwitched = await switchToCorrectNetwork();
           if (!networkSwitched) {
-            alert(`Please switch to ${NETWORK_NAME} network to use this application.`);
+            setConnectionError(`Please switch to ${NETWORK_NAME} network to use this application.`);
+            return false;
           }
         }
         
@@ -157,7 +165,7 @@ export function Web3Provider({ children }) {
         setNetworkId(chainId);
         
         // Initialize contracts
-        initializeContracts(web3Provider, web3Provider.getSigner());
+        const success = await initializeContracts(web3Provider, web3Provider.getSigner());
         
         // Set up listeners
         window.ethereum.on('accountsChanged', handleAccountsChanged);
@@ -166,14 +174,15 @@ export function Web3Provider({ children }) {
         console.log("Connected to:", accounts[0]);
         console.log("Network:", network.name, "ChainId:", chainId);
         
-        return true;
+        return success;
       } else {
         console.error("MetaMask is not installed");
-        alert("Please install MetaMask to use this application");
+        setConnectionError("Please install MetaMask to use this application");
         return false;
       }
     } catch (error) {
       console.error("Error connecting to wallet:", error);
+      setConnectionError("Failed to connect to wallet: " + error.message);
       return false;
     }
   }
@@ -248,6 +257,7 @@ export function Web3Provider({ children }) {
           await governanceContract.govParams();
         } catch (verifyError) {
           console.error("Error verifying governance contract:", verifyError);
+          throw verifyError;
         }
         newContracts.governance = governanceContract;
         console.log("Governance contract initialized successfully");
@@ -263,6 +273,13 @@ export function Web3Provider({ children }) {
           JustTimelockABI.abi,
           signer
         );
+        // Verify contract works
+        try {
+          await timelockContract.minDelay();
+        } catch (verifyError) {
+          console.error("Error verifying timelock contract:", verifyError);
+          throw verifyError;
+        }
         newContracts.timelock = timelockContract;
         console.log("Timelock contract initialized successfully");
       } catch (error) {
@@ -277,8 +294,14 @@ export function Web3Provider({ children }) {
           JustAnalyticsHelperABI.abi,
           signer
         );
+        // Try to verify contract
+        const hasAnalyticsRole = await analyticsHelperContract.hasRole(
+          ethers.utils.keccak256(ethers.utils.toUtf8Bytes("ANALYTICS_ROLE")),
+          account
+        ).catch(() => false);
+        
         newContracts.analyticsHelper = analyticsHelperContract;
-        console.log("Analytics helper contract initialized successfully");
+        console.log("Analytics helper contract initialized successfully, has analytics role:", hasAnalyticsRole);
       } catch (error) {
         console.error("Error initializing analytics helper contract:", error);
         newContractErrors.analyticsHelper = error.message;
@@ -309,6 +332,7 @@ export function Web3Provider({ children }) {
     } catch (error) {
       console.error("Error in contract initialization:", error);
       setContractErrors({global: error.message});
+      setConnectionError("Failed to initialize contracts. Please check your connection.");
       setContractsReady(false);
       return false;
     }
@@ -332,6 +356,7 @@ export function Web3Provider({ children }) {
     });
     setContractsReady(false);
     setContractErrors({});
+    setConnectionError(null);
     
     // Remove listeners
     if (window.ethereum) {
@@ -351,6 +376,7 @@ export function Web3Provider({ children }) {
     contractsReady,
     contractErrors,
     refreshCounter,
+    connectionError,
     connectWallet,
     disconnectWallet,
     refreshData,
