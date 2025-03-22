@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { ethers } from 'ethers';
 import { useWeb3 } from '../contexts/Web3Context';
 import { useAuth } from '../contexts/AuthContext';
 import { useDelegation } from '../hooks/useDelegation';
@@ -29,16 +30,27 @@ const JustDAODashboard = () => {
   // Web3 context for blockchain connection
   const { account, isConnected, connectWallet, disconnectWallet, contracts } = useWeb3();
   
-  // Auth context for user data
-  const { user, hasRole } = useAuth();
-  
   // Custom hooks for DAO functionality
   const delegation = useDelegation();
   const proposalsHook = useProposals();
   const votingHook = useVoting();
   
+  // Auth context for user data
+  const { user, hasRole } = useAuth();
+  
   // Use the enhanced DAO stats hook
   const daoStats = useDAOStats();
+  
+  // Debug log for voting power calculation
+  useEffect(() => {
+    console.log("Voting power calculation data:", {
+      userBalance: user.balance,
+      userDelegate: user.delegate,
+      account: account,
+      isSelfDelegated: user.delegate === account || user.delegate === ethers.constants.AddressZero,
+      delegatedToYou: delegation?.delegationInfo?.delegatedToYou || "0"
+    });
+  }, [user, account, delegation?.delegationInfo]);
   
   // Format numbers to be more readable
   const formatNumber = (value, decimals = 2) => {
@@ -93,7 +105,9 @@ const JustDAODashboard = () => {
                 <div className="flex gap-2">
                   <span>{formatNumber(user.balance)} JUST</span>
                   <span>|</span>
-                  <span>{formatNumber(user.votingPower)} Voting Power</span>
+                  <span>{formatNumber(user.delegate && user.delegate.toLowerCase() !== account.toLowerCase() 
+                    ? "0" 
+                    : (parseFloat(user.balance) + parseFloat(delegation?.delegationInfo?.delegatedToYou || "0")).toString())} Voting Power</span>
                 </div>
               </div>
             ) : (

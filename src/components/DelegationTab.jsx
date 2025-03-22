@@ -133,8 +133,10 @@ const DelegationTab = ({ user, delegation }) => {
               <div>
                 <p className="text-sm text-gray-500">Your Voting Power</p>
                 <p className="font-medium">
-                  {/* Force voting power to match balance when self-delegated */}
-                  {selfDelegated ? (user?.balance || "0") : "0"} JUST
+                  {/* Include delegated tokens in voting power when self-delegated */}
+                  {selfDelegated ? 
+                    (parseFloat(user?.balance || "0") + parseFloat(delegationInfo.delegatedToYou || "0")).toFixed(2) : 
+                    "0"} JUST
                 </p>
               </div>
             </div>
@@ -182,13 +184,15 @@ const DelegationTab = ({ user, delegation }) => {
             <h3 className="text-lg font-medium text-gray-900 mb-4">Delegated to You</h3>
             
             <div className="text-center py-4">
-              <p className="text-3xl font-bold text-indigo-600">{delegationInfo.delegatedToYou}</p>
+              <p className="text-3xl font-bold text-indigo-600">
+                {parseFloat(delegationInfo.delegatedToYou).toFixed(2)}
+              </p>
               <p className="text-sm text-gray-500">JUST tokens</p>
             </div>
             
             <p className="text-sm text-gray-700 mb-4">
               {parseFloat(delegationInfo.delegatedToYou) > 0 
-                ? `You have ${delegationInfo.delegatedToYou} JUST tokens delegated to your address from other token holders.`
+                ? `You have ${parseFloat(delegationInfo.delegatedToYou).toFixed(2)} JUST tokens delegated to your address from other token holders.`
                 : "No tokens delegated to you yet."}
             </p>
             
@@ -198,7 +202,7 @@ const DelegationTab = ({ user, delegation }) => {
                 {delegationInfo.delegators.map((delegator, idx) => (
                   <div key={idx} className="text-sm flex justify-between items-center border-t pt-2">
                     <span>{formatAddress(delegator.address)}</span>
-                    <span className="font-medium">{delegator.balance} JUST</span>
+                    <span className="font-medium">{parseFloat(delegator.balance).toFixed(2)} JUST</span>
                   </div>
                 ))}
               </div>
