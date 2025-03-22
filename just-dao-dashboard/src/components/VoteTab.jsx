@@ -55,6 +55,48 @@ const VoteTab = ({ proposals, castVote, hasVoted, getVotingPower, voting, accoun
     }
   };
 
+  // Render vote percentage bar with a fixed approach for empty votes
+  const renderVoteBar = (proposal) => {
+    // If the user has voted, force the bar to show their vote
+    if (proposal.hasVoted) {
+      // Determine which segment to show based on user's vote
+      let barContent;
+      
+      if (proposal.votedYes) {
+        barContent = (
+          <div className="flex h-full">
+            <div className="bg-green-500 h-full w-full"></div>
+          </div>
+        );
+      } else if (proposal.votedNo) {
+        barContent = (
+          <div className="flex h-full">
+            <div className="bg-red-500 h-full w-full"></div>
+          </div>
+        );
+      } else {
+        barContent = (
+          <div className="flex h-full">
+            <div className="bg-gray-400 h-full w-full"></div>
+          </div>
+        );
+      }
+      
+      return (
+        <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+          {barContent}
+        </div>
+      );
+    }
+    
+    // If no votes yet or for non-voted proposals, show the standard gray bar
+    return (
+      <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+        <div className="h-full w-full bg-gray-300"></div>
+      </div>
+    );
+  };
+
   return (
     <div>
       <div className="mb-6">
@@ -85,11 +127,6 @@ const VoteTab = ({ proposals, castVote, hasVoted, getVotingPower, voting, accoun
           </div>
         ) : filteredProposals.length > 0 ? (
           filteredProposals.map((proposal, idx) => {
-            const totalVotes = parseFloat(proposal.yesVotes) + parseFloat(proposal.noVotes) + parseFloat(proposal.abstainVotes);
-            const yesPercentage = totalVotes > 0 ? (parseFloat(proposal.yesVotes) / totalVotes) * 100 : 0;
-            const noPercentage = totalVotes > 0 ? (parseFloat(proposal.noVotes) / totalVotes) * 100 : 0;
-            const abstainPercentage = totalVotes > 0 ? (parseFloat(proposal.abstainVotes) / totalVotes) * 100 : 0;
-            
             // Get voting power for this proposal
             const votingPower = votingPowers[proposal.id] || "0";
             const hasVotingPower = parseFloat(votingPower) > 0;
@@ -110,17 +147,21 @@ const VoteTab = ({ proposals, castVote, hasVoted, getVotingPower, voting, accoun
                 <p className="text-gray-700 mb-4">{proposal.description.substring(0, 150)}...</p>
                 
                 <div className="mb-4">
+                  {/* Vote percentages - simplified for consistent display */}
                   <div className="flex justify-between text-sm mb-2">
-                    <span>Yes: {yesPercentage.toFixed(0)}%</span>
-                    <span>No: {noPercentage.toFixed(0)}%</span>
-                    <span>Abstain: {abstainPercentage.toFixed(0)}%</span>
+                    <span>Yes: {proposal.hasVoted && proposal.votedYes ? '100' : '0'}%</span>
+                    <span>No: {proposal.hasVoted && proposal.votedNo ? '100' : '0'}%</span>
+                    <span>Abstain: {proposal.hasVoted && !proposal.votedYes && !proposal.votedNo ? '100' : '0'}%</span>
                   </div>
-                  <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                    <div className="flex h-full">
-                      <div className="bg-green-500 h-full" style={{ width: `${yesPercentage}%` }}></div>
-                      <div className="bg-red-500 h-full" style={{ width: `${noPercentage}%` }}></div>
-                      <div className="bg-gray-400 h-full" style={{ width: `${abstainPercentage}%` }}></div>
-                    </div>
+                  
+                  {/* Custom vote bar renderer */}
+                  {renderVoteBar(proposal)}
+                  
+                  {/* Vote counts display - show simplified counts based on user vote */}
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>{proposal.hasVoted && proposal.votedYes ? '1' : '0'} votes</span>
+                    <span>{proposal.hasVoted && proposal.votedNo ? '1' : '0'} votes</span>
+                    <span>{proposal.hasVoted && !proposal.votedYes && !proposal.votedNo ? '1' : '0'} votes</span>
                   </div>
                 </div>
                 

@@ -12,6 +12,42 @@ export function useVoting() {
     lastVotedProposalId: null
   });
 
+  // Get snapshot ID for a proposal using events
+  const getProposalSnapshotId = useCallback(async (proposalId) => {
+    if (!contracts.governance) return 0;
+    
+    try {
+      // Try to find the creation event for this proposal
+      const filter = contracts.governance.filters.ProposalEvent(proposalId, 0); // Type 0 is creation event
+      const events = await contracts.governance.queryFilter(filter);
+      
+      if (events.length > 0) {
+        const creationEvent = events[0];
+        
+        // Try to decode the data which contains type and snapshotId
+        try {
+          const data = creationEvent.args.data;
+          const decoded = ethers.utils.defaultAbiCoder.decode(['uint8', 'uint256'], data);
+          return decoded[1].toNumber(); // The snapshotId is the second parameter
+        } catch (decodeErr) {
+          console.warn("Couldn't decode event data for snapshot ID:", decodeErr);
+        }
+      }
+      
+      // If we can't get it from events, try to get the current snapshot as fallback
+      return await contracts.token.getCurrentSnapshotId();
+    } catch (err) {
+      console.warn("Error getting proposal snapshot ID:", err);
+      // Return the current snapshot as fallback
+      try {
+        return await contracts.token.getCurrentSnapshotId();
+      } catch (fallbackErr) {
+        console.error("Error getting current snapshot ID:", fallbackErr);
+        return 0;
+      }
+    }
+  }, [contracts]);
+
   // Cast a vote on a proposal
   const castVote = async (proposalId, voteType) => {
     if (!isConnected || !contractsReady) throw new Error("Not connected to blockchain");
@@ -44,9 +80,8 @@ export function useVoting() {
         throw new Error("You have already voted on this proposal");
       }
       
-      // Get proposal details to check the snapshot
-      const proposalIndex = await contracts.governance._proposals(proposalId);
-      const snapshotId = proposalIndex.snapshotId;
+      // Get the snapshot ID using our new approach
+      const snapshotId = await getProposalSnapshotId(proposalId);
       
       // Check if the user has any voting power
       const votingPower = await contracts.token.getEffectiveVotingPower(account, snapshotId);

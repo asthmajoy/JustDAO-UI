@@ -55,7 +55,7 @@ export function useProposals() {
 
   // Helper function to extract title and description
   const extractTitleAndDescription = useCallback((rawDescription) => {
-    if (!rawDescription) return { title: "Untitled Proposal", description: "" };
+    if (!rawDescription) return { title: "Untitled Proposal", description: "No description available" };
     
     // Split by newline to get title and description
     const parts = rawDescription.split('\n');
@@ -102,72 +102,214 @@ export function useProposals() {
     return typeLabels[type] || "Unknown";
   }, []);
 
-  // Helper function to load detailed proposal data
-  const loadProposalDetails = useCallback(async (proposalId) => {
+  // Enhanced function to get proposal details including transaction data
+  const getProposalDetailsFromEvents = useCallback(async (proposalId) => {
     try {
       // First check if the proposal exists by getting its state
       const proposalState = await contracts.governance.getProposalState(proposalId);
       
-      // Get full proposal details
-      const proposalDetails = await contracts.governance._proposals(proposalId);
+      // Look for the transaction that created this proposal
+      // This will give us access to the input data which contains all proposal details
+      const provider = contracts.governance.provider;
       
-      // Extract title and description
-      const { title, description } = extractTitleAndDescription(proposalDetails.description);
+      // Create a filter for ProposalEvent events related to this proposal
+      const filter = contracts.governance.filters.ProposalEvent(proposalId, 0); // Type 0 is creation event
+      const events = await contracts.governance.queryFilter(filter);
       
-      // Format the proposal data
-      const formattedProposal = {
-        id: proposalId,
-        title: title || `Proposal #${proposalId}`, // Provide a default title if missing
-        description: description || "No description provided", // Default description
-        proposer: proposalDetails.proposer,
-        deadline: new Date(proposalDetails.deadline.toNumber() * 1000),
-        createdAt: new Date(proposalDetails.createdAt.toNumber() * 1000),
-        state: proposalState,
-        stateLabel: getProposalStateLabel(proposalState),
-        type: proposalDetails.pType,
-        typeLabel: getProposalTypeLabel(proposalDetails.pType),
-        yesVotes: ethers.utils.formatEther(proposalDetails.yesVotes),
-        noVotes: ethers.utils.formatEther(proposalDetails.noVotes),
-        abstainVotes: ethers.utils.formatEther(proposalDetails.abstainVotes),
-        timelockTxHash: proposalDetails.timelockTxHash,
-        hasVoted: false,
-        votedYes: false,
-        votedNo: false,
-        votedAbstain: false,
-        snapshotId: proposalDetails.snapshotId.toNumber(),
-        // Additional data based on proposal type
-        target: proposalDetails.target,
-        callData: proposalDetails.callData,
-        recipient: proposalDetails.recipient,
-        amount: proposalDetails.amount,
-        token: proposalDetails.token,
-        // For governance change proposals
-        newThreshold: proposalDetails.newThreshold,
-        newQuorum: proposalDetails.newQuorum,
-        newVotingDuration: proposalDetails.newVotingDuration ? proposalDetails.newVotingDuration.toNumber() : 0,
-        newTimelockDelay: proposalDetails.newTimelockDelay ? proposalDetails.newTimelockDelay.toNumber() : 0,
-      };
+      if (events.length === 0) {
+        // If no events found, create a minimal proposal object
+        return {
+          id: proposalId,
+          title: `Proposal #${proposalId}`,
+          description: "No description available",
+          state: proposalState,
+          stateLabel: getProposalStateLabel(proposalState),
+          type: PROPOSAL_TYPES.GENERAL,
+          typeLabel: getProposalTypeLabel(PROPOSAL_TYPES.GENERAL),
+          yesVotes: "0",
+          noVotes: "0",
+          abstainVotes: "0",
+          hasVoted: false,
+          snapshotId: 0,
+          target: ethers.constants.AddressZero,
+          callData: "0x",
+          proposer: ethers.constants.AddressZero,
+          createdAt: new Date(),
+          deadline: new Date(Date.now() + 3*24*60*60*1000) // Default 3 day deadline
+        };
+      }
+      
+      // Get the creation event
+      const creationEvent = events[0];
+      
+      // Get the transaction that created the proposal
+      const txHash = creationEvent.transactionHash;
+      const tx = await provider.getTransaction(txHash);
+      const txReceipt = await provider.getTransactionReceipt(txHash);
+      
+      // Get timestamp for the block
+      const block = await provider.getBlock(txReceipt.blockNumber);
+      const createdAt = new Date(block.timestamp * 1000);
+      
+      // Parse the input data to get proposal details
+      // The createProposal function signature looks like:
+      // createProposal(string calldata description, ProposalType proposalType, address target, bytes calldata callData, 
+      //                uint256 amount, address payable recipient, address externalToken, uint256 newThreshold, 
+      //                uint256 newQuorum, uint256 newVotingDuration, uint256 newTimelockDelay)
+      
+      let proposalDescription = "No description available";
+      let proposalType = PROPOSAL_TYPES.GENERAL;
+      let target = ethers.constants.AddressZero;
+      let callData = "0x";
+      let amount = "0";
+      let recipient = ethers.constants.AddressZero;
+      let externalToken = ethers.constants.AddressZero;
+      
+      try {
+        // Create the interface for decoding
+        const iface = new ethers.utils.Interface([
+          "function createProposal(string description, uint8 proposalType, address target, bytes callData, uint256 amount, address recipient, address externalToken, uint256 newThreshold, uint256 newQuorum, uint256 newVotingDuration, uint256 newTimelockDelay) returns (uint256)"
+        ]);
+        
+        // Decode the input data
+        const decodedData = iface.parseTransaction({ data: tx.data });
+        
+        if (decodedData && decodedData.args) {
+          proposalDescription = decodedData.args[0] || proposalDescription;
+          proposalType = decodedData.args[1] !== undefined ? Number(decodedData.args[1]) : proposalType;
+          target = decodedData.args[2] || target;
+          callData = decodedData.args[3] || callData;
+          amount = decodedData.args[4] ? ethers.utils.formatEther(decodedData.args[4]) : amount;
+          recipient = decodedData.args[5] || recipient;
+          externalToken = decodedData.args[6] || externalToken;
+        }
+      } catch (decodeErr) {
+        console.warn("Couldn't decode transaction data:", decodeErr);
+      }
+      
+      // Get more data from the creation event
+      const proposer = creationEvent.args.actor;
+      let snapshotId = 0;
+      
+      // Try to decode the data field which contains type and snapshotId
+      try {
+        const data = creationEvent.args.data;
+        const decoded = ethers.utils.defaultAbiCoder.decode(['uint8', 'uint256'], data);
+        proposalType = Number(decoded[0]);
+        snapshotId = decoded[1].toNumber();
+      } catch (err) {
+        console.warn("Couldn't decode event data:", err);
+      }
+      
+      // Try to get vote counts (this is challenging without direct access)
+      let yesVotes = "0";
+      let noVotes = "0";
+      let abstainVotes = "0";
+      
+      // Look for vote events (event type 6)
+      const voteFilter = contracts.governance.filters.ProposalEvent(proposalId, 6); // Type 6 is vote event
+      const voteEvents = await contracts.governance.queryFilter(voteFilter);
+      
+      // Aggregate votes from events
+      for (const event of voteEvents) {
+        try {
+          const data = event.args.data;
+          const decoded = ethers.utils.defaultAbiCoder.decode(['uint8', 'uint256'], data);
+          const voteType = decoded[0].toNumber();
+          const votePower = ethers.utils.formatEther(decoded[1]);
+          
+          if (voteType === 1) { // FOR
+            yesVotes = (parseFloat(yesVotes) + parseFloat(votePower)).toString();
+          } else if (voteType === 0) { // AGAINST
+            noVotes = (parseFloat(noVotes) + parseFloat(votePower)).toString();
+          } else if (voteType === 2) { // ABSTAIN
+            abstainVotes = (parseFloat(abstainVotes) + parseFloat(votePower)).toString();
+          }
+        } catch (err) {
+          console.warn("Couldn't decode vote event:", err);
+        }
+      }
+      
+      // Calculate deadline based on voting duration (from governance parameters)
+      let deadline = new Date(createdAt);
+      try {
+        const govParams = await contracts.governance.govParams();
+        deadline = new Date(createdAt.getTime() + (govParams.votingDuration.toNumber() * 1000));
+      } catch (err) {
+        console.warn("Couldn't get voting duration:", err);
+        // Default to 3 days if we can't get the actual duration
+        deadline = new Date(createdAt.getTime() + (3 * 24 * 60 * 60 * 1000));
+      }
       
       // Check if the user has voted on this proposal
+      let hasVoted = false;
+      let votedYes = false;
+      let votedNo = false;
+      let votedAbstain = false;
+      
       if (account) {
         try {
           const voteDetails = await getVoteDetails(proposalId, account);
-          formattedProposal.hasVoted = voteDetails.hasVoted;
-          formattedProposal.votedYes = voteDetails.voteType === 1;  // FOR
-          formattedProposal.votedNo = voteDetails.voteType === 0;   // AGAINST
-          formattedProposal.votedAbstain = voteDetails.voteType === 2; // ABSTAIN
+          hasVoted = voteDetails.hasVoted;
+          votedYes = voteDetails.voteType === 1;  // FOR
+          votedNo = voteDetails.voteType === 0;   // AGAINST
+          votedAbstain = voteDetails.voteType === 2; // ABSTAIN
         } catch (err) {
           console.warn(`Error checking vote status for proposal ${proposalId}:`, err);
         }
       }
       
-      return formattedProposal;
+      // Extract title and description
+      const { title, description } = extractTitleAndDescription(proposalDescription);
+      
+      // Check for timelock transaction hash in queued event
+      let timelockTxHash = ethers.constants.HashZero;
+      const queuedFilter = contracts.governance.filters.ProposalEvent(proposalId, 2); // Type 2 is queued event
+      const queuedEvents = await contracts.governance.queryFilter(queuedFilter);
+      
+      if (queuedEvents.length > 0) {
+        try {
+          const data = queuedEvents[0].args.data;
+          const decoded = ethers.utils.defaultAbiCoder.decode(['bytes32'], data);
+          timelockTxHash = decoded[0];
+        } catch (err) {
+          console.warn("Couldn't decode queued event:", err);
+        }
+      }
+      
+      return {
+        id: proposalId,
+        title: title || `Proposal #${proposalId}`,
+        description: description || "No description available",
+        proposer,
+        deadline,
+        createdAt,
+        state: proposalState,
+        stateLabel: getProposalStateLabel(proposalState),
+        type: proposalType,
+        typeLabel: getProposalTypeLabel(proposalType),
+        yesVotes,
+        noVotes,
+        abstainVotes,
+        timelockTxHash,
+        hasVoted,
+        votedYes,
+        votedNo,
+        votedAbstain,
+        snapshotId,
+        target,
+        callData,
+        recipient,
+        amount,
+        token: externalToken
+      };
     } catch (err) {
       console.warn(`Error loading proposal ${proposalId}:`, err);
       return null;
     }
-  }, [contracts, account, extractTitleAndDescription, getProposalStateLabel, getProposalTypeLabel, getVoteDetails]);
+  }, [contracts, account, getProposalStateLabel, getProposalTypeLabel, getVoteDetails, extractTitleAndDescription]);
 
+  // Fetch proposals using enhanced approach
   const fetchProposals = useCallback(async () => {
     if (!isConnected || !contractsReady || !contracts.governance) {
       setLoading(false);
@@ -257,7 +399,7 @@ export function useProposals() {
         const endIdx = Math.min(startIdx + batchSize, maxId + 1);
         
         for (let i = startIdx; i < endIdx; i++) {
-          batchPromises.push(loadProposalDetails(i));
+          batchPromises.push(getProposalDetailsFromEvents(i));
         }
         
         const batchResults = await Promise.allSettled(batchPromises);
@@ -289,8 +431,9 @@ export function useProposals() {
     } finally {
       setLoading(false);
     }
-  }, [contracts, isConnected, contractsReady, loadProposalDetails]);
+  }, [contracts, isConnected, contractsReady, getProposalDetailsFromEvents]);
 
+  // The rest of your code remains the same (createProposal, cancelProposal, etc.)
   const createProposal = async (
     description, 
     type, 
@@ -460,19 +603,11 @@ export function useProposals() {
       setLoading(true);
       setError(null);
       
-      // Get the proposal first to check if the user is the proposer
-      const proposal = proposals.find(p => p.id === proposalId);
-      if (!proposal) throw new Error(`Proposal ${proposalId} not found`);
-      
-      // Check if the user is the proposer or has GUARDIAN role
-      if (proposal.proposer.toLowerCase() !== account.toLowerCase()) {
-        // Try to check if the user has GUARDIAN role
-        const guardianRole = ethers.utils.keccak256(ethers.utils.toUtf8Bytes("GUARDIAN_ROLE"));
-        const hasGuardianRole = await contracts.governance.hasRole(guardianRole, account);
-        
-        if (!hasGuardianRole) {
-          throw new Error("Only the proposer or a guardian can cancel this proposal");
-        }
+      // Verify the proposal exists
+      try {
+        await contracts.governance.getProposalState(proposalId);
+      } catch (err) {
+        throw new Error(`Proposal ${proposalId} not found`);
       }
       
       const tx = await contracts.governance.cancelProposal(proposalId, {
@@ -583,18 +718,11 @@ export function useProposals() {
       setLoading(true);
       setError(null);
       
-      // Verify the user is the proposer
-      const proposal = proposals.find(p => p.id === proposalId);
-      if (!proposal) throw new Error(`Proposal ${proposalId} not found`);
-      
-      if (proposal.proposer.toLowerCase() !== account.toLowerCase()) {
-        throw new Error("Only the proposer can claim a refund");
-      }
-      
-      // Verify the proposal state is appropriate for a refund
-      const state = await contracts.governance.getProposalState(proposalId);
-      if (![PROPOSAL_STATES.DEFEATED, PROPOSAL_STATES.CANCELED, PROPOSAL_STATES.EXPIRED].includes(state)) {
-        throw new Error("Refunds are only available for defeated, canceled, or expired proposals");
+      // Verify the proposal exists
+      try {
+        await contracts.governance.getProposalState(proposalId);
+      } catch (err) {
+        throw new Error(`Proposal ${proposalId} not found`);
       }
       
       const tx = await contracts.governance.claimPartialStakeRefund(proposalId, {

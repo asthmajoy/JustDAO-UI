@@ -34,10 +34,12 @@ export function useDelegation() {
       const isSelfDelegated = currentDelegate === account || 
                              currentDelegate === ethers.constants.AddressZero;
       
-      // Get locked tokens for delegation
-      const lockedTokens = await contracts.token.getLockedTokens(account);
+      // Get locked tokens for delegation (should be 0 if self-delegated)
+      const lockedTokens = isSelfDelegated 
+        ? ethers.BigNumber.from(0) 
+        : await contracts.token.getLockedTokens(account);
       
-      // Get tokens delegated to the user (total voting power delegated to this account)
+      // Get tokens delegated to the user by others (not including own tokens)
       const delegatedToUser = await contracts.token.getDelegatedToAddress(account);
       
       // Get list of addresses delegating to this user
@@ -156,6 +158,16 @@ export function useDelegation() {
   const resetDelegation = async () => {
     if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.token) throw new Error("Token contract not initialized");
+    
+    // Check if already self-delegated to prevent unnecessary transactions
+    const currentDelegate = await contracts.token.getDelegate(account);
+    const isSelfDelegated = currentDelegate === account || 
+                           currentDelegate === ethers.constants.AddressZero;
+    
+    if (isSelfDelegated) {
+      console.log("Already self-delegated, no action needed");
+      return true;
+    }
     
     try {
       setLoading(true);
