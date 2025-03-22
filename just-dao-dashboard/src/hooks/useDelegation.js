@@ -1,5 +1,3 @@
-// useDelegation.js - Fixed implementation for delegation functionality
-
 import { useState, useEffect, useCallback } from 'react';
 import { ethers } from 'ethers';
 import { useWeb3 } from '../contexts/Web3Context';
@@ -26,11 +24,15 @@ export function useDelegation() {
       setLoading(true);
       setError(null);
       
+      console.log("Fetching delegation info for account:", account);
+      
       // Get current delegate
       const currentDelegate = await contracts.token.getDelegate(account);
+      console.log("Current delegate:", currentDelegate);
       
-      // Check if self-delegated
-      const isSelfDelegated = currentDelegate === account || currentDelegate === ethers.constants.AddressZero;
+      // Check if self-delegated (if delegate is self or zero address, consider it self-delegated)
+      const isSelfDelegated = currentDelegate === account || 
+                             currentDelegate === ethers.constants.AddressZero;
       
       // Get locked tokens for delegation
       const lockedTokens = await contracts.token.getLockedTokens(account);
@@ -67,6 +69,14 @@ export function useDelegation() {
         delegators,
         isSelfDelegated
       });
+      
+      console.log("Delegation info updated:", {
+        currentDelegate,
+        lockedTokens: ethers.utils.formatEther(lockedTokens),
+        delegatedToYou: ethers.utils.formatEther(delegatedToUser),
+        delegatorsCount: delegators.length,
+        isSelfDelegated
+      });
     } catch (err) {
       console.error("Error fetching delegation info:", err);
       setError("Failed to fetch delegation information: " + err.message);
@@ -87,6 +97,11 @@ export function useDelegation() {
     if (!isConnected || !contractsReady) throw new Error("Not connected");
     if (!contracts.token) throw new Error("Token contract not initialized");
     if (!ethers.utils.isAddress(delegateeAddress)) throw new Error("Invalid address format");
+    
+    // Prevent self-delegation via regular delegate - should use resetDelegation instead
+    if (delegateeAddress.toLowerCase() === account.toLowerCase()) {
+      return resetDelegation();
+    }
     
     try {
       setLoading(true);
@@ -173,6 +188,11 @@ export function useDelegation() {
   const getDelegationDepthWarning = async (delegator, delegatee) => {
     if (!isConnected || !contractsReady) throw new Error("Not connected");
     
+    // If trying to delegate to self, return no warning (it's just a reset)
+    if (delegator.toLowerCase() === delegatee.toLowerCase()) {
+      return { warningLevel: 0, message: "Self-delegation has no depth issues" };
+    }
+    
     try {
       // Try to use DAO helper if available
       if (contracts.daoHelper) {
@@ -192,18 +212,13 @@ export function useDelegation() {
       let currentDelegate = delegatee;
       const visited = new Set();
       
-      // Check if this would create a cycle
-      if (currentDelegate === delegator) {
-        return { warningLevel: 0, message: "Self-delegation has no depth issues" };
-      }
-      
       // Check the delegation chain depth
       while (currentDelegate && currentDelegate !== ethers.constants.AddressZero) {
-        if (visited.has(currentDelegate)) {
+        if (visited.has(currentDelegate.toLowerCase())) {
           return { warningLevel: 3, message: "This delegation would create a cycle" };
         }
         
-        visited.add(currentDelegate);
+        visited.add(currentDelegate.toLowerCase());
         depth++;
         
         if (depth >= 8) { // Max depth is 8 in the contract
@@ -215,8 +230,13 @@ export function useDelegation() {
           currentDelegate = await contracts.token.getDelegate(currentDelegate);
           
           // If the delegate is delegating to themself or not delegating, stop
-          if (currentDelegate === ethers.constants.AddressZero || visited.has(currentDelegate)) {
+          if (currentDelegate === ethers.constants.AddressZero || visited.has(currentDelegate.toLowerCase())) {
             break;
+          }
+          
+          // Check if this would create a cycle back to the delegator
+          if (currentDelegate.toLowerCase() === delegator.toLowerCase()) {
+            return { warningLevel: 3, message: "This delegation would create a cycle" };
           }
         } catch (err) {
           break;

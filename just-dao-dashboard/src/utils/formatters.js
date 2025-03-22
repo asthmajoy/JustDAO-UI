@@ -120,3 +120,42 @@ export function formatNumber(value, decimals = 0) {
     .toFixed(decimals)
     .replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
+
+// Helper function for status colors
+export function getStatusColor(status) {
+  switch (status) {
+    case 'active':
+      return 'bg-yellow-100 text-yellow-800';
+    case 'succeeded':
+      return 'bg-green-100 text-green-800';
+    case 'pending':
+    case 'queued':
+      return 'bg-blue-100 text-blue-800';
+    case 'executed':
+      return 'bg-indigo-100 text-indigo-800';
+    case 'defeated':
+      return 'bg-red-100 text-red-800';
+    case 'canceled':
+    case 'expired':
+      return 'bg-gray-100 text-gray-800';
+    default:
+      return 'bg-gray-100 text-gray-800';
+  }
+}
+
+// Helper function to format time in seconds to readable format
+export function formatTime(seconds) {
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  
+  if (days > 0) {
+    return `${days} day${days > 1 ? 's' : ''}${hours > 0 ? ` ${hours} hr${hours > 1 ? 's' : ''}` : ''}`;
+  } else if (hours > 0) {
+    return `${hours} hour${hours > 1 ? 's' : ''}`;
+  } else if (minutes > 0) {
+    return `${minutes} minute${minutes > 1 ? 's' : ''}`;
+  } else {
+    return `${seconds} second${seconds !== 1 ? 's' : ''}`;
+  }
+}

@@ -1,6 +1,4 @@
-// useVoting.js - Fixed implementation for voting functionality
-
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { ethers } from 'ethers';
 import { useWeb3 } from '../contexts/Web3Context';
 import { VOTE_TYPES } from '../utils/constants';
@@ -16,7 +14,7 @@ export function useVoting() {
 
   // Cast a vote on a proposal
   const castVote = async (proposalId, voteType) => {
-    if (!isConnected || !contractsReady) throw new Error("Not connected");
+    if (!isConnected || !contractsReady) throw new Error("Not connected to blockchain");
     if (!contracts.governance) throw new Error("Governance contract not initialized");
     
     try {
@@ -26,6 +24,8 @@ export function useVoting() {
         success: false,
         lastVotedProposalId: null
       });
+      
+      console.log(`Attempting to cast vote on proposal ${proposalId} with vote type ${voteType}`);
       
       // Validate vote type
       if (![VOTE_TYPES.AGAINST, VOTE_TYPES.FOR, VOTE_TYPES.ABSTAIN].includes(Number(voteType))) {
@@ -39,25 +39,27 @@ export function useVoting() {
       }
       
       // Check if the user has already voted
-      const existingVote = await contracts.governance.proposalVoterInfo(proposalId, account);
-      if (!existingVote.isZero()) {
+      const hasAlreadyVoted = await hasVoted(proposalId);
+      if (hasAlreadyVoted) {
         throw new Error("You have already voted on this proposal");
       }
       
+      // Get proposal details to check the snapshot
+      const proposalIndex = await contracts.governance._proposals(proposalId);
+      const snapshotId = proposalIndex.snapshotId;
+      
       // Check if the user has any voting power
-      const proposalDetails = await contracts.governance._proposals(proposalId);
-      const snapshotId = proposalDetails.snapshotId;
       const votingPower = await contracts.token.getEffectiveVotingPower(account, snapshotId);
       
       if (votingPower.isZero()) {
-        throw new Error("You don't have any voting power for this proposal");
+        throw new Error("You don't have any voting power for this proposal. You may need to delegate to yourself or acquire tokens before the snapshot.");
       }
       
-      console.log(`Casting vote on proposal ${proposalId} with vote type ${voteType}`);
+      console.log(`Casting vote with ${ethers.utils.formatEther(votingPower)} voting power`);
       
-      // Cast the vote
+      // Cast the vote with proper gas limit to prevent issues
       const tx = await contracts.governance.castVote(proposalId, voteType, {
-        gasLimit: 200000 // Set a reasonable gas limit
+        gasLimit: 300000 // Set a reasonable gas limit
       });
       
       const receipt = await tx.wait();
@@ -77,12 +79,15 @@ export function useVoting() {
       };
     } catch (err) {
       console.error("Error casting vote:", err);
+      const errorMessage = err.reason || err.message || "Unknown error";
+      
       setVoting({ 
         loading: false, 
-        error: err.message, 
+        error: errorMessage, 
         success: false,
         lastVotedProposalId: null
       });
+      
       throw err;
     }
   };
@@ -94,8 +99,8 @@ export function useVoting() {
     
     try {
       // Check if user has voted on this proposal
-      const votingPower = await contracts.governance.proposalVoterInfo(proposalId, account);
-      return !votingPower.isZero();
+      const voterInfo = await contracts.governance.proposalVoterInfo(proposalId, account);
+      return !voterInfo.isZero();
     } catch (err) {
       console.error(`Error checking if user has voted on proposal ${proposalId}:`, err);
       return false;
@@ -108,6 +113,8 @@ export function useVoting() {
     if (!contracts.token) return "0";
     
     try {
+      console.log(`Getting voting power for snapshot ${snapshotId}`);
+      
       // If no snapshot ID is provided, get the current one
       let actualSnapshotId = snapshotId;
       
@@ -116,7 +123,10 @@ export function useVoting() {
       }
       
       const votingPower = await contracts.token.getEffectiveVotingPower(account, actualSnapshotId);
-      return ethers.utils.formatEther(votingPower);
+      const formattedPower = ethers.utils.formatEther(votingPower);
+      
+      console.log(`Voting power at snapshot ${actualSnapshotId}: ${formattedPower}`);
+      return formattedPower;
     } catch (err) {
       console.error("Error getting voting power:", err);
       return "0";
@@ -131,15 +141,14 @@ export function useVoting() {
     
     try {
       // First check if the user has voted
-      const votingPower = await contracts.governance.proposalVoterInfo(proposalId, account);
+      const voterInfo = await contracts.governance.proposalVoterInfo(proposalId, account);
       
-      if (votingPower.isZero()) {
+      if (voterInfo.isZero()) {
         return { hasVoted: false, votingPower: "0", voteType: null };
       }
       
-      // Try to determine how they voted
-      // This is tricky since the contract doesn't store the vote type directly
-      // We need to check vote cast events
+      // Try to determine how they voted by checking events
+      const votingPower = ethers.utils.formatEther(voterInfo);
       let voteType = null;
       
       try {
@@ -148,7 +157,7 @@ export function useVoting() {
         const events = await contracts.governance.queryFilter(filter);
         
         if (events.length > 0) {
-          // Use the most recent vote (in case of any bugs/issues)
+          // Use the most recent vote (in case of any issues)
           const latestEvent = events[events.length - 1];
           voteType = latestEvent.args.support;
         }
@@ -158,14 +167,24 @@ export function useVoting() {
       
       return {
         hasVoted: true,
-        votingPower: ethers.utils.formatEther(votingPower),
-        voteType
+        votingPower: votingPower,
+        voteType: voteType
       };
     } catch (err) {
       console.error("Error getting vote details:", err);
       return { hasVoted: false, votingPower: "0", voteType: null };
     }
   }, [contracts, account, isConnected, contractsReady]);
+
+  // Clear voting state when dependencies change
+  useEffect(() => {
+    setVoting({
+      loading: false,
+      error: null,
+      success: false,
+      lastVotedProposalId: null
+    });
+  }, [account, isConnected, contractsReady, refreshCounter]);
 
   return {
     castVote,
