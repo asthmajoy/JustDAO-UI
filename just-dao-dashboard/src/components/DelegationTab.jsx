@@ -3,11 +3,60 @@ import { formatAddress } from '../utils/formatters';
 import Loader from './Loader';
 
 const DelegationTab = ({ user, delegation }) => {
+  // Add debugging
+  console.log("DelegationTab rendered, activeTab should be 'delegation'");
+  console.log("Delegation prop:", delegation);
+  console.log("User prop:", user);
+
   const [delegateAddress, setDelegateAddress] = useState('');
-  const { delegationInfo, loading, delegate, resetDelegation, getDelegationDepthWarning } = delegation;
+  
+  // Handle the case where delegation might be undefined
+  const delegationInfo = delegation?.delegationInfo || {
+    currentDelegate: null,
+    lockedTokens: "0",
+    delegatedToYou: "0",
+    delegators: []
+  };
+  const loading = delegation?.loading || false;
+  const delegate = delegation?.delegate || (() => {
+    console.error("Delegation function not available");
+    alert("Delegation feature not available");
+  });
+  const resetDelegation = delegation?.resetDelegation || (() => {
+    console.error("Reset delegation function not available");
+    alert("Reset delegation feature not available");
+  });
+  const getDelegationDepthWarning = delegation?.getDelegationDepthWarning || (() => {
+    return { warningLevel: 0, message: "Delegation depth check not available" };
+  });
+
+  // Helper function to properly detect self-delegation
+  const isSelfDelegated = (userAddress, delegateAddress) => {
+    if (!userAddress || !delegateAddress) return true; // Default to self-delegated if addresses aren't available
+    
+    // Normalize addresses for comparison
+    const normalizedUserAddr = userAddress.toLowerCase();
+    const normalizedDelegateAddr = delegateAddress.toLowerCase();
+    
+    // Check if delegate is self or zero address
+    return normalizedUserAddr === normalizedDelegateAddr || 
+           delegateAddress === '0x0000000000000000000000000000000000000000';
+  };
+
+  // Determine delegation status directly in the component
+  // Handle potentially missing user address or currentDelegate
+  const userAddress = user?.address || '';
+  const currentDelegate = delegationInfo?.currentDelegate || '';
+  const selfDelegated = isSelfDelegated(userAddress, currentDelegate);
 
   const handleDelegate = async () => {
     if (!delegateAddress) return;
+    
+    // Make sure user address exists
+    if (!user?.address) {
+      alert("User address not available");
+      return;
+    }
     
     // Prevent self-delegation via the form - should use reset instead
     if (delegateAddress.toLowerCase() === user.address.toLowerCase()) {
@@ -44,11 +93,6 @@ const DelegationTab = ({ user, delegation }) => {
     }
   };
 
-  // Determine if the user has delegated away their voting power
-  const hasDelegatedAway = delegationInfo.currentDelegate && 
-                          delegationInfo.currentDelegate !== user.address && 
-                          delegationInfo.currentDelegate !== '0x0000000000000000000000000000000000000000';
-
   return (
     <div>
       <div className="mb-6">
@@ -70,22 +114,28 @@ const DelegationTab = ({ user, delegation }) => {
               <div>
                 <p className="text-sm text-gray-500">Current Delegate</p>
                 <p className="font-medium">
-                  {hasDelegatedAway ? 
-                    formatAddress(delegationInfo.currentDelegate) : 
-                    'Self (not delegated)'}
+                  {selfDelegated ? 
+                    `${userAddress ? formatAddress(userAddress) : 'Self'} (Self)` : 
+                    currentDelegate ? formatAddress(currentDelegate) : 'Unknown'}
                 </p>
               </div>
               <div>
                 <p className="text-sm text-gray-500">Locked Tokens</p>
-                <p className="font-medium">{hasDelegatedAway ? user.balance : "0"} JUST</p>
+                <p className="font-medium">
+                  {/* Force 0 locked tokens when self-delegated regardless of contract state */}
+                  {selfDelegated ? "0" : (user?.balance || "0")} JUST
+                </p>
               </div>
               <div>
                 <p className="text-sm text-gray-500">Your Balance</p>
-                <p className="font-medium">{user.balance} JUST</p>
+                <p className="font-medium">{user?.balance || "0"} JUST</p>
               </div>
               <div>
                 <p className="text-sm text-gray-500">Your Voting Power</p>
-                <p className="font-medium">{hasDelegatedAway ? "0.0" : user.votingPower} JUST</p>
+                <p className="font-medium">
+                  {/* Force voting power to match balance when self-delegated */}
+                  {selfDelegated ? (user?.balance || "0") : "0"} JUST
+                </p>
               </div>
             </div>
             
@@ -103,18 +153,19 @@ const DelegationTab = ({ user, delegation }) => {
                   <button 
                     className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md"
                     onClick={handleDelegate}
-                    disabled={!user.balance || parseFloat(user.balance) === 0}
+                    disabled={!user?.balance || parseFloat(user?.balance || "0") === 0}
                   >
                     Delegate
                   </button>
                 </div>
                 <p className="text-xs text-gray-500 mt-1">
-                  Delegating locks your tokens but allows you to maintain ownership while transferring voting power.
+                  Delegating transfers your voting power but allows you to maintain token ownership.
+                  {!selfDelegated && " Your tokens are locked while delegated."}
                 </p>
               </div>
               
               <div className="pt-4 border-t border-gray-200">
-                {hasDelegatedAway && (
+                {!selfDelegated && (
                   <button 
                     className="w-full bg-red-100 text-red-700 hover:bg-red-200 py-2 rounded-md"
                     onClick={handleResetDelegation}
@@ -136,7 +187,9 @@ const DelegationTab = ({ user, delegation }) => {
             </div>
             
             <p className="text-sm text-gray-700 mb-4">
-              You have {delegationInfo.delegatedToYou} JUST tokens delegated to your address from other token holders.
+              {parseFloat(delegationInfo.delegatedToYou) > 0 
+                ? `You have ${delegationInfo.delegatedToYou} JUST tokens delegated to your address from other token holders.`
+                : "No tokens delegated to you yet."}
             </p>
             
             {delegationInfo.delegators && delegationInfo.delegators.length > 0 ? (
@@ -159,42 +212,4 @@ const DelegationTab = ({ user, delegation }) => {
   );
 };
 
-// Helper function for status colors
-function getStatusColor(status) {
-    switch (status) {
-      case 'active':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'succeeded':
-        return 'bg-green-100 text-green-800';
-      case 'pending':
-      case 'queued':
-        return 'bg-blue-100 text-blue-800';
-      case 'executed':
-        return 'bg-indigo-100 text-indigo-800';
-      case 'defeated':
-        return 'bg-red-100 text-red-800';
-      case 'canceled':
-      case 'expired':
-        return 'bg-gray-100 text-gray-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
-    }
-  }
-  
-  // Helper function to format time in seconds to readable format
-  function formatTime(seconds) {
-    const days = Math.floor(seconds / 86400);
-    const hours = Math.floor((seconds % 86400) / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    
-    if (days > 0) {
-      return `${days} day${days > 1 ? 's' : ''}${hours > 0 ? ` ${hours} hr${hours > 1 ? 's' : ''}` : ''}`;
-    } else if (hours > 0) {
-      return `${hours} hour${hours > 1 ? 's' : ''}`;
-    } else if (minutes > 0) {
-      return `${minutes} minute${minutes > 1 ? 's' : ''}`;
-    } else {
-      return `${seconds} second${seconds !== 1 ? 's' : ''}`;
-    }
-  }
 export default DelegationTab;

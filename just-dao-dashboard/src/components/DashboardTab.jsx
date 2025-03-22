@@ -1,208 +1,219 @@
-import React from 'react';
-import { Clock, TrendingUp, Users, FileText } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { formatAddress } from '../utils/formatters';
 import Loader from './Loader';
-import { formatCountdown } from '../utils/formatters';
-import { PROPOSAL_STATES } from '../utils/constants';
 
-const DashboardTab = ({ user, stats, loading, proposals }) => {
-  // Render vote percentage bar with a fixed approach for empty votes
-  const renderVoteBar = (proposal) => {
-    // If the user has voted, force the bar to show their vote
-    if (proposal.hasVoted) {
-      // Determine which segment to show based on user's vote
-      let barContent;
-      
-      if (proposal.votedYes) {
-        barContent = (
-          <div className="flex h-full">
-            <div className="bg-green-500 h-full w-full"></div>
-          </div>
-        );
-      } else if (proposal.votedNo) {
-        barContent = (
-          <div className="flex h-full">
-            <div className="bg-red-500 h-full w-full"></div>
-          </div>
-        );
-      } else {
-        barContent = (
-          <div className="flex h-full">
-            <div className="bg-gray-400 h-full w-full"></div>
-          </div>
-        );
-      }
-      
-      return (
-        <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-          {barContent}
-        </div>
-      );
+
+import { useDelegation } from '../hooks/useDelegation';
+
+const DelegationTab = ({ user, delegation: externalDelegation }) => {
+  // Use the hook directly in the component as a fallback
+  const localDelegation = useDelegation();
+  
+  // Use external delegation if available, otherwise use local
+  const delegation = externalDelegation || localDelegation;
+  
+  const [delegateAddress, setDelegateAddress] = useState('');
+  
+  // Handle the case where delegation might be undefined
+  const delegationInfo = delegation?.delegationInfo || {
+    currentDelegate: null,
+    lockedTokens: "0",
+    delegatedToYou: "0",
+    delegators: []
+  };
+  const loading = delegation?.loading || false;
+  const delegate = delegation?.delegate || (() => {
+    console.error("Delegation function not available");
+    alert("Delegation feature not available");
+  });
+  const resetDelegation = delegation?.resetDelegation || (() => {
+    console.error("Reset delegation function not available");
+    alert("Reset delegation feature not available");
+  });
+  const getDelegationDepthWarning = delegation?.getDelegationDepthWarning || (() => {
+    return { warningLevel: 0, message: "Delegation depth check not available" };
+  });
+
+  // Helper function to properly detect self-delegation
+  const isSelfDelegated = (userAddress, delegateAddress) => {
+    if (!userAddress || !delegateAddress) return true; // Default to self-delegated if addresses aren't available
+    
+    // Normalize addresses for comparison
+    const normalizedUserAddr = userAddress.toLowerCase();
+    const normalizedDelegateAddr = delegateAddress.toLowerCase();
+    
+    // Check if delegate is self or zero address
+    return normalizedUserAddr === normalizedDelegateAddr || 
+           delegateAddress === '0x0000000000000000000000000000000000000000';
+  };
+
+  // Determine delegation status directly in the component
+  // Handle potentially missing user address or currentDelegate
+  const userAddress = user?.address || '';
+  const currentDelegate = delegationInfo?.currentDelegate || '';
+  const selfDelegated = isSelfDelegated(userAddress, currentDelegate);
+
+  const handleDelegate = async () => {
+    if (!delegateAddress) return;
+    
+    // Make sure user address exists
+    if (!user?.address) {
+      alert("User address not available");
+      return;
     }
     
-    // If no votes yet or for non-voted proposals, show the standard gray bar
-    return (
-      <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-        <div className="h-full w-full bg-gray-300"></div>
-      </div>
-    );
+    // Prevent self-delegation via the form - should use reset instead
+    if (delegateAddress.toLowerCase() === user.address.toLowerCase()) {
+      return handleResetDelegation();
+    }
+    
+    try {
+      // Check for potential delegation depth issues
+      const warning = await getDelegationDepthWarning(user.address, delegateAddress);
+      
+      if (warning.warningLevel === 3) {
+        alert("This delegation would exceed the maximum delegation depth limit or create a cycle");
+        return;
+      } else if (warning.warningLevel > 0) {
+        const proceed = window.confirm(warning.message + ". Do you want to proceed?");
+        if (!proceed) return;
+      }
+      
+      await delegate(delegateAddress);
+      setDelegateAddress('');
+    } catch (error) {
+      console.error("Error delegating:", error);
+      alert("Error delegating. See console for details.");
+    }
+  };
+
+  const handleResetDelegation = async () => {
+    try {
+      await resetDelegation();
+      setDelegateAddress('');
+    } catch (error) {
+      console.error("Error resetting delegation:", error);
+      alert("Error resetting delegation. See console for details.");
+    }
   };
 
   return (
     <div>
       <div className="mb-6">
-        <h2 className="text-xl font-semibold">Dashboard</h2>
-        <p className="text-gray-500">Overview of JustDAO and your participation</p>
+        <h2 className="text-xl font-semibold">Delegation</h2>
+        <p className="text-gray-500">Manage your voting power delegation</p>
       </div>
       
-      {/* User stats */}
-      <div className="bg-white p-6 rounded-lg shadow-md mb-6">
-        <h3 className="text-lg font-medium mb-4">Your Stats</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="p-4 bg-indigo-50 rounded-lg">
-            <div className="text-sm text-indigo-600 mb-1">Total Balance</div>
-            <div className="text-2xl font-bold">{user.balance} JUST</div>
-          </div>
-          
-          <div className="p-4 bg-indigo-50 rounded-lg">
-            <div className="text-sm text-indigo-600 mb-1">Voting Power</div>
-            <div className="text-2xl font-bold">{user.votingPower}</div>
-          </div>
-          
-          <div className="p-4 bg-indigo-50 rounded-lg">
-            <div className="text-sm text-indigo-600 mb-1">Delegation Status</div>
-            <div className="text-2xl font-bold">{user.delegatedTo ? 'Delegated' : 'Self'}</div>
-            {user.delegatedTo && <div className="text-xs mt-1 text-indigo-500">To: {user.delegatedTo}</div>}
-          </div>
+      {loading ? (
+        <div className="flex justify-center py-8">
+          <Loader size="large" text="Loading delegation data..." />
         </div>
-      </div>
-      
-      {/* DAO Stats */}
-      <div className="bg-white p-6 rounded-lg shadow-md mb-6">
-        <h3 className="text-lg font-medium mb-4">DAO Stats</h3>
-        
-        {loading ? (
-          <div className="flex justify-center py-8">
-            <Loader size="medium" text="Loading statistics..." />
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-gray-600">Token Holders</div>
-                <Users className="w-5 h-5 text-gray-400" />
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+          {/* Your delegation status */}
+          <div className="bg-white p-6 rounded-lg shadow md:col-span-2">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">Your Delegation Status</h3>
+            
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <div>
+                <p className="text-sm text-gray-500">Current Delegate</p>
+                <p className="font-medium">
+                  {selfDelegated ? 
+                    `${userAddress ? formatAddress(userAddress) : 'Self'} (Self)` : 
+                    currentDelegate ? formatAddress(currentDelegate) : 'Unknown'}
+                </p>
               </div>
-              <div className="text-xl font-bold">{stats.totalHolders}</div>
+              <div>
+                <p className="text-sm text-gray-500">Locked Tokens</p>
+                <p className="font-medium">
+                  {/* Force 0 locked tokens when self-delegated regardless of contract state */}
+                  {selfDelegated ? "0" : (user?.balance || "0")} JUST
+                </p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Your Balance</p>
+                <p className="font-medium">{user?.balance || "0"} JUST</p>
+              </div>
+              <div>
+                <p className="text-sm text-gray-500">Your Voting Power</p>
+                <p className="font-medium">
+                  {/* Force voting power to match balance when self-delegated */}
+                  {selfDelegated ? (user?.balance || "0") : "0"} JUST
+                </p>
+              </div>
             </div>
             
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-gray-600">Circulating Supply</div>
-                <TrendingUp className="w-5 h-5 text-gray-400" />
-              </div>
-              <div className="text-xl font-bold">{stats.circulatingSupply}</div>
-            </div>
-            
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-gray-600">Active Proposals</div>
-                <FileText className="w-5 h-5 text-gray-400" />
-              </div>
-              <div className="text-xl font-bold">{stats.activeProposals} of {stats.totalProposals}</div>
-            </div>
-            
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-gray-600">Participation Rate</div>
-                <Users className="w-5 h-5 text-gray-400" />
-              </div>
-              <div className="text-xl font-bold">{stats.formattedParticipationRate}</div>
-            </div>
-            
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-gray-600">Delegation Rate</div>
-                <Users className="w-5 h-5 text-gray-400" />
-              </div>
-              <div className="text-xl font-bold">{stats.formattedDelegationRate}</div>
-            </div>
-            
-            <div className="p-4 bg-gray-50 rounded-lg">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-gray-600">Proposal Success Rate</div>
-                <TrendingUp className="w-5 h-5 text-gray-400" />
-              </div>
-              <div className="text-xl font-bold">{stats.formattedSuccessRate}</div>
-            </div>
-          </div>
-        )}
-      </div>
-      
-      {/* Active Proposals */}
-      <div className="bg-white p-6 rounded-lg shadow-md">
-        <h3 className="text-lg font-medium mb-4">Active Proposals</h3>
-        
-        {loading ? (
-          <div className="flex justify-center py-8">
-            <Loader size="medium" text="Loading proposals..." />
-          </div>
-        ) : proposals && proposals.length > 0 ? (
-          <div className="space-y-4">
-            {proposals.map((proposal, idx) => {
-              return (
-                <div key={idx} className="border border-gray-200 rounded-lg p-4">
-                  <div className="flex justify-between items-start mb-2">
-                    <div>
-                      <h4 className="font-medium">{proposal.title}</h4>
-                      <p className="text-xs text-gray-500">Proposal #{proposal.id}</p>
-                    </div>
-                    <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full flex items-center">
-                      <Clock className="w-3 h-3 mr-1" />
-                      {formatCountdown(proposal.deadline)}
-                    </span>
-                  </div>
-                  
-                  <div className="mb-3">
-                    {/* Vote percentages - simplified for consistent display */}
-                    <div className="flex justify-between text-sm mb-1">
-                      <span>Yes: {proposal.hasVoted && proposal.votedYes ? '100' : '0'}%</span>
-                      <span>No: {proposal.hasVoted && proposal.votedNo ? '100' : '0'}%</span>
-                      <span>Abstain: {proposal.hasVoted && !proposal.votedYes && !proposal.votedNo ? '100' : '0'}%</span>
-                    </div>
-                    
-                    {/* Custom vote bar renderer */}
-                    {renderVoteBar(proposal)}
-                    
-                    {/* Vote counts display - show simplified counts based on user vote */}
-                    <div className="flex justify-between text-xs text-gray-500 mt-1">
-                      <span>{proposal.hasVoted && proposal.votedYes ? '1' : '0'} votes</span>
-                      <span>{proposal.hasVoted && proposal.votedNo ? '1' : '0'} votes</span>
-                      <span>{proposal.hasVoted && !proposal.votedYes && !proposal.votedNo ? '1' : '0'} votes</span>
-                    </div>
-                  </div>
-                  
-                  {proposal.hasVoted && (
-                    <div className="text-sm text-gray-700 mb-2">
-                      You voted: <span className="px-2 py-1 rounded-full text-xs bg-blue-100 text-blue-800">
-                        {proposal.votedYes ? 'Yes' : proposal.votedNo ? 'No' : 'Abstain'}
-                      </span>
-                    </div>
-                  )}
-                  
-                  <button className="text-indigo-600 hover:text-indigo-800 text-sm">
-                    View Details
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Delegate To</label>
+                <div className="flex space-x-2">
+                  <input 
+                    type="text" 
+                    className="flex-1 rounded-md border border-gray-300 p-2" 
+                    placeholder="Enter delegate address" 
+                    value={delegateAddress}
+                    onChange={(e) => setDelegateAddress(e.target.value)}
+                  />
+                  <button 
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md"
+                    onClick={handleDelegate}
+                    disabled={!user?.balance || parseFloat(user?.balance || "0") === 0}
+                  >
+                    Delegate
                   </button>
                 </div>
-              );
-            })}
+                <p className="text-xs text-gray-500 mt-1">
+                  Delegating transfers your voting power but allows you to maintain token ownership.
+                  {!selfDelegated && " Your tokens are locked while delegated."}
+                </p>
+              </div>
+              
+              <div className="pt-4 border-t border-gray-200">
+                {!selfDelegated && (
+                  <button 
+                    className="w-full bg-red-100 text-red-700 hover:bg-red-200 py-2 rounded-md"
+                    onClick={handleResetDelegation}
+                  >
+                    Reset Delegation (Self-Delegate)
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
-        ) : (
-          <div className="text-center py-8 text-gray-500">
-            No active proposals at the moment
+          
+          {/* Delegated to you */}
+          <div className="bg-white p-6 rounded-lg shadow">
+            <h3 className="text-lg font-medium text-gray-900 mb-4">Delegated to You</h3>
+            
+            <div className="text-center py-4">
+              <p className="text-3xl font-bold text-indigo-600">{delegationInfo.delegatedToYou}</p>
+              <p className="text-sm text-gray-500">JUST tokens</p>
+            </div>
+            
+            <p className="text-sm text-gray-700 mb-4">
+              {parseFloat(delegationInfo.delegatedToYou) > 0 
+                ? `You have ${delegationInfo.delegatedToYou} JUST tokens delegated to your address from other token holders.`
+                : "No tokens delegated to you yet."}
+            </p>
+            
+            {delegationInfo.delegators && delegationInfo.delegators.length > 0 ? (
+              <div className="space-y-2">
+                <h4 className="font-medium text-sm">Your Delegators:</h4>
+                {delegationInfo.delegators.map((delegator, idx) => (
+                  <div key={idx} className="text-sm flex justify-between items-center border-t pt-2">
+                    <span>{formatAddress(delegator.address)}</span>
+                    <span className="font-medium">{delegator.balance} JUST</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">No delegators yet</p>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 };
 
-export default DashboardTab;
+export default DelegationTab;

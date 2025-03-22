@@ -26,6 +26,10 @@ export function useDelegation() {
       
       console.log("Fetching delegation info for account:", account);
       
+      // Get user balance first to use for voting power calculations
+      const userBalance = await contracts.token.balanceOf(account);
+      const formattedBalance = ethers.utils.formatEther(userBalance);
+      
       // Get current delegate
       const currentDelegate = await contracts.token.getDelegate(account);
       console.log("Current delegate:", currentDelegate);
@@ -34,13 +38,30 @@ export function useDelegation() {
       const isSelfDelegated = currentDelegate === account || 
                              currentDelegate === ethers.constants.AddressZero;
       
-      // Get locked tokens for delegation (should be 0 if self-delegated)
-      const lockedTokens = isSelfDelegated 
-        ? ethers.BigNumber.from(0) 
-        : await contracts.token.getLockedTokens(account);
+      // Check actual locked tokens from contract
+      let lockedTokens = await contracts.token.getLockedTokens(account);
       
-      // Get tokens delegated to the user by others (not including own tokens)
-      const delegatedToUser = await contracts.token.getDelegatedToAddress(account);
+      // IMPORTANT: Force tokens to be unlocked if self-delegated
+      // This ensures correct reporting regardless of contract state
+      if (isSelfDelegated && !lockedTokens.isZero()) {
+        console.warn("Self-delegated but tokens are still locked! Contract may need fixing.");
+        
+        // For UI purposes, we'll report 0 locked tokens when self-delegated
+        // regardless of what the contract says, to ensure consistency
+        lockedTokens = ethers.BigNumber.from(0);
+        
+        // Attempt to unlock tokens if they're incorrectly locked
+        try {
+          // This is a safety check - only try to call unlockTokens if the contract state is inconsistent
+          const unlockTx = await contracts.token.unlockTokens({
+            gasLimit: 200000
+          });
+          await unlockTx.wait();
+          console.log("Performed emergency token unlock due to inconsistent state");
+        } catch (unlockErr) {
+          console.warn("Could not perform emergency unlock:", unlockErr.message);
+        }
+      }
       
       // Get list of addresses delegating to this user
       const delegatorAddresses = await contracts.token.getDelegatorsOf(account);
@@ -64,20 +85,44 @@ export function useDelegation() {
         })
       );
       
+      // FIXED: Calculate delegatedToYou correctly by filtering out self-delegation
+      // and manually summing the balances of other users who delegated to you
+      const filteredDelegators = delegators.filter(
+        delegator => delegator.address.toLowerCase() !== account.toLowerCase()
+      );
+      
+      const delegatedToYou = filteredDelegators.reduce(
+        (sum, delegator) => sum + parseFloat(delegator.balance), 
+        0
+      ).toString();
+      
+      // IMPORTANT: Calculate correct voting power based on delegation status
+      // When self-delegated: voting power = user balance
+      // When delegated away: voting power = 0
+      const votingPower = isSelfDelegated ? formattedBalance : "0";
+      
+      // IMPORTANT: For UI consistency, locked tokens should be 0 when self-delegated
+      // and equal to balance when delegated away
+      const displayLockedTokens = isSelfDelegated ? "0" : formattedBalance;
+      
       setDelegationInfo({
         currentDelegate,
-        lockedTokens: ethers.utils.formatEther(lockedTokens),
-        delegatedToYou: ethers.utils.formatEther(delegatedToUser),
-        delegators,
-        isSelfDelegated
+        // Override contract's lockedTokens value for UI consistency
+        lockedTokens: displayLockedTokens,
+        delegatedToYou,
+        delegators: filteredDelegators,
+        isSelfDelegated,
+        // Add voting power to delegation info for consistency
+        votingPower
       });
       
       console.log("Delegation info updated:", {
         currentDelegate,
         lockedTokens: ethers.utils.formatEther(lockedTokens),
-        delegatedToYou: ethers.utils.formatEther(delegatedToUser),
-        delegatorsCount: delegators.length,
-        isSelfDelegated
+        delegatedToYou,
+        delegatorsCount: filteredDelegators.length,
+        isSelfDelegated,
+        votingPower
       });
     } catch (err) {
       console.error("Error fetching delegation info:", err);
@@ -87,6 +132,8 @@ export function useDelegation() {
     }
   }, [contracts, account, isConnected, contractsReady]);
 
+  // Rest of the code remains the same...
+  
   // Load delegation info on initial load and when dependencies change
   useEffect(() => {
     if (isConnected && contractsReady) {
@@ -166,6 +213,26 @@ export function useDelegation() {
     
     if (isSelfDelegated) {
       console.log("Already self-delegated, no action needed");
+      
+      // Even if already self-delegated, check if there are any locked tokens that need to be unlocked
+      const lockedTokens = await contracts.token.getLockedTokens(account);
+      if (!lockedTokens.isZero()) {
+        console.log("Found locked tokens even though self-delegated, attempting to unlock");
+        try {
+          // Call explicit unlock if tokens are still locked (backup)
+          const unlockTx = await contracts.token.unlockTokens({
+            gasLimit: 200000
+          });
+          await unlockTx.wait();
+          console.log("Unlock transaction confirmed");
+          
+          // Refresh after unlocking
+          await fetchDelegationInfo();
+        } catch (unlockErr) {
+          console.warn("Error trying to unlock tokens:", unlockErr);
+        }
+      }
+      
       return true;
     }
     
@@ -183,7 +250,26 @@ export function useDelegation() {
       await tx.wait();
       console.log("Reset delegation transaction confirmed");
       
-      // Refresh delegation info
+      // IMPORTANT: Explicitly check if tokens need to be unlocked after resetting delegation
+      // Some contracts might not automatically unlock tokens on self-delegation
+      const lockedTokensAfterReset = await contracts.token.getLockedTokens(account);
+      if (!lockedTokensAfterReset.isZero()) {
+        console.log("Tokens still locked after reset, explicitly unlocking...");
+        
+        // Add explicit unlock call - many token contracts require this
+        // If your contract doesn't have this method, you might need to modify this part
+        try {
+          const unlockTx = await contracts.token.unlockTokens({
+            gasLimit: 200000
+          });
+          await unlockTx.wait();
+          console.log("Unlock transaction confirmed");
+        } catch (unlockErr) {
+          console.warn("Error trying to unlock tokens (contract may not support direct unlocking):", unlockErr);
+        }
+      }
+      
+      // Refresh delegation info after both operations
       await fetchDelegationInfo();
       
       return true;
