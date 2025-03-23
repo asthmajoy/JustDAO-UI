@@ -4,7 +4,7 @@ import { useWeb3 } from '../contexts/Web3Context';
 import { useAuth } from '../contexts/AuthContext';
 import { useDelegation } from '../hooks/useDelegation';
 import { useProposals } from '../hooks/useProposals';
-import { useVoting } from '../hooks/useVoting';
+import useVoting from '../hooks/useVoting';
 import { useDAOStats } from '../hooks/useDAOStats';
 import { formatAddress } from '../utils/formatters';
 import { PROPOSAL_STATES } from '../utils/constants';

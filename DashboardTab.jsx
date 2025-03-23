@@ -1,9 +1,9 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Clock, ArrowRight } from 'lucide-react';
 import { formatPercentage, formatCountdown } from '../utils/formatters';
 import Loader from './Loader';
 
-const DashboardTab = ({ user, stats, loading, proposals }) => {
+const DashboardTab = ({ user, stats, loading, proposals, getProposalVoteTotals }) => {
   // Format numbers for display
   const formatNumberDisplay = (value) => {
     if (value === undefined || value === null) return "0";
@@ -39,6 +39,30 @@ const DashboardTab = ({ user, stats, loading, proposals }) => {
     // Return with exactly 5 decimal places
     return numValue.toFixed(5);
   };
+
+  // Store proposal vote data
+  const [proposalVoteData, setProposalVoteData] = useState({});
+  
+  // Fetch vote data for active proposals
+  useEffect(() => {
+    const fetchVoteData = async () => {
+      if (!getProposalVoteTotals || !proposals || proposals.length === 0) return;
+      
+      const voteData = {};
+      for (const proposal of proposals) {
+        try {
+          const data = await getProposalVoteTotals(proposal.id);
+          voteData[proposal.id] = data;
+        } catch (error) {
+          console.error(`Error fetching vote data for proposal ${proposal.id}:`, error);
+        }
+      }
+      
+      setProposalVoteData(voteData);
+    };
+    
+    fetchVoteData();
+  }, [proposals, getProposalVoteTotals]);
   
   return (
     <div>
@@ -81,7 +105,7 @@ const DashboardTab = ({ user, stats, loading, proposals }) => {
             </div>
             <div>
               <p className="text-gray-500">Voting Power</p>
-              <p className="text-2xl font-bold">{user.votingPower} JUST</p>
+              <p className="text-2xl font-bold">{formatToFiveDecimals(user.votingPower)} JUST</p>
             </div>
             <div className="mt-4">
               <button 
@@ -143,60 +167,24 @@ const DashboardTab = ({ user, stats, loading, proposals }) => {
         <div className="space-y-4">
           {proposals && proposals.length > 0 ? (
             proposals.map((proposal, idx) => {
-              // Ensure we have the user's vote status
-              const userVoted = proposal.hasVoted || proposal.votedYes || proposal.votedNo;
-              let userVoteType = null;
-              if (proposal.votedYes) userVoteType = "Yes";
-              else if (proposal.votedNo) userVoteType = "No";
-              else if (proposal.hasVoted) userVoteType = "Abstain";
-              
-              // Extract numeric values from potentially formatted strings
-              const extractNumber = (str) => {
-                if (typeof str === 'number') return str;
-                if (!str) return 0;
-                // Remove any commas and convert to number
-                return parseFloat(str.toString().replace(/,/g, '')) || 0;
+              // Get vote data from our new hook method
+              const voteData = proposalVoteData[proposal.id] || {
+                yesVotes: parseFloat(proposal.yesVotes) || 0,
+                noVotes: parseFloat(proposal.noVotes) || 0,
+                abstainVotes: parseFloat(proposal.abstainVotes) || 0,
+                totalVoters: 0,
+                yesPercentage: 0,
+                noPercentage: 0,
+                abstainPercentage: 0
               };
               
-              // Parse vote data using our extractor
-              let yesVotes = extractNumber(proposal.yesVotes);
-              let noVotes = extractNumber(proposal.noVotes);
-              let abstainVotes = extractNumber(proposal.abstainVotes);
-              
-              // If the user has voted but their vote doesn't seem to be counted in the contract yet,
-              // make sure to show at least 1 vote in the appropriate category
-              if (userVoted) {
-                if (proposal.votedYes && yesVotes < 1) yesVotes = 1;
-                if (proposal.votedNo && noVotes < 1) noVotes = 1;
-                if (proposal.hasVoted && !proposal.votedYes && !proposal.votedNo && abstainVotes < 1) abstainVotes = 1;
+              // If no vote data is available yet, calculate percentages
+              if (!voteData.yesPercentage) {
+                const totalVotes = voteData.yesVotes + voteData.noVotes + voteData.abstainVotes;
+                voteData.yesPercentage = totalVotes > 0 ? (voteData.yesVotes / totalVotes) * 100 : 0;
+                voteData.noPercentage = totalVotes > 0 ? (voteData.noVotes / totalVotes) * 100 : 0;
+                voteData.abstainPercentage = totalVotes > 0 ? (voteData.abstainVotes / totalVotes) * 100 : 0;
               }
-              
-              // Log vote data for debugging
-              console.log(`Dashboard - Proposal ${proposal.id} vote data:`, {
-                originalYesVotes: proposal.yesVotes,
-                originalNoVotes: proposal.noVotes,
-                originalAbstainVotes: proposal.abstainVotes,
-                extractedYesVotes: yesVotes,
-                extractedNoVotes: noVotes,
-                extractedAbstainVotes: abstainVotes,
-                userVoted,
-                userVoteType
-              });
-              
-              // Calculate total votes
-              const totalVotes = yesVotes + noVotes + abstainVotes;
-              
-              // Calculate percentages
-              const yesPercentage = totalVotes > 0 ? (yesVotes / totalVotes) * 100 : 0;
-              const noPercentage = totalVotes > 0 ? (noVotes / totalVotes) * 100 : 0;
-              const abstainPercentage = totalVotes > 0 ? (abstainVotes / totalVotes) * 100 : 0;
-              
-              // Check if the user has voted
-              const userHasVoted = proposal.hasVoted || proposal.votedYes || proposal.votedNo;
-              let userHasVoteType = null;
-              if (proposal.votedYes) userVoteType = "Yes";
-              else if (proposal.votedNo) userVoteType = "No";
-              else if (proposal.hasVoted) userVoteType = "Abstain";
               
               return (
                 <div key={idx} className="p-4 border border-gray-200 rounded-lg">
@@ -211,37 +199,27 @@ const DashboardTab = ({ user, stats, loading, proposals }) => {
                     </span>
                   </div>
                   <div className="flex justify-between text-sm mb-2">
-                    <span>Yes: {yesPercentage.toFixed(1)}%</span>
-                    <span>No: {noPercentage.toFixed(1)}%</span>
-                    <span>Abstain: {abstainPercentage.toFixed(1)}%</span>
+                    <span>Yes: {voteData.yesPercentage.toFixed(1)}%</span>
+                    <span>No: {voteData.noPercentage.toFixed(1)}%</span>
+                    <span>Abstain: {voteData.abstainPercentage.toFixed(1)}%</span>
                   </div>
                   <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
                     <div className="flex h-full">
-                      <div className="bg-green-500 h-full" style={{ width: `${yesPercentage}%` }}></div>
-                      <div className="bg-red-500 h-full" style={{ width: `${noPercentage}%` }}></div>
-                      <div className="bg-gray-400 h-full" style={{ width: `${abstainPercentage}%` }}></div>
+                      <div className="bg-green-500 h-full" style={{ width: `${voteData.yesPercentage}%` }}></div>
+                      <div className="bg-red-500 h-full" style={{ width: `${voteData.noPercentage}%` }}></div>
+                      <div className="bg-gray-400 h-full" style={{ width: `${voteData.abstainPercentage}%` }}></div>
                     </div>
-                  </div>
-                  {/* Vote counts */}
-                  <div className="flex justify-between text-xs text-gray-500 mt-1">
-                    <span>{Math.round(yesVotes)} votes</span>
-                    <span>{Math.round(noVotes)} votes</span>
-                    <span>{Math.round(abstainVotes)} votes</span>
                   </div>
                   
-                  {/* Show user's vote if they voted */}
-                  {userVoted && (
-                    <div className="mt-2 text-sm">
-                      <span className="text-gray-700">Your vote: </span>
-                      <span className={`font-medium ${
-                        userVoteType === "Yes" ? "text-green-600" : 
-                        userVoteType === "No" ? "text-red-600" : 
-                        "text-gray-600"
-                      }`}>
-                        {userVoteType}
-                      </span>
-                    </div>
-                  )}
+                  {/* Vote totals and total voters - NEW */}
+                  <div className="grid grid-cols-3 gap-2 text-xs text-gray-500 mt-2">
+                    <div>{Math.round(voteData.yesVotes)} votes</div>
+                    <div className="text-center">{Math.round(voteData.noVotes)} votes</div>
+                    <div className="text-right">{Math.round(voteData.abstainVotes)} votes</div>
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1 text-right">
+                    Total voters: {voteData.totalVoters || 0}
+                  </div>
                 </div>
               );
             })
