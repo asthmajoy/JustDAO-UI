@@ -143,14 +143,60 @@ const DashboardTab = ({ user, stats, loading, proposals }) => {
         <div className="space-y-4">
           {proposals && proposals.length > 0 ? (
             proposals.map((proposal, idx) => {
-              const yesVotes = parseFloat(proposal.yesVotes) || 0;
-              const noVotes = parseFloat(proposal.noVotes) || 0;
-              const abstainVotes = parseFloat(proposal.abstainVotes) || 0;
+              // Ensure we have the user's vote status
+              const userVoted = proposal.hasVoted || proposal.votedYes || proposal.votedNo;
+              let userVoteType = null;
+              if (proposal.votedYes) userVoteType = "Yes";
+              else if (proposal.votedNo) userVoteType = "No";
+              else if (proposal.hasVoted) userVoteType = "Abstain";
+              
+              // Extract numeric values from potentially formatted strings
+              const extractNumber = (str) => {
+                if (typeof str === 'number') return str;
+                if (!str) return 0;
+                // Remove any commas and convert to number
+                return parseFloat(str.toString().replace(/,/g, '')) || 0;
+              };
+              
+              // Parse vote data using our extractor
+              let yesVotes = extractNumber(proposal.yesVotes);
+              let noVotes = extractNumber(proposal.noVotes);
+              let abstainVotes = extractNumber(proposal.abstainVotes);
+              
+              // If the user has voted but their vote doesn't seem to be counted in the contract yet,
+              // make sure to show at least 1 vote in the appropriate category
+              if (userVoted) {
+                if (proposal.votedYes && yesVotes < 1) yesVotes = 1;
+                if (proposal.votedNo && noVotes < 1) noVotes = 1;
+                if (proposal.hasVoted && !proposal.votedYes && !proposal.votedNo && abstainVotes < 1) abstainVotes = 1;
+              }
+              
+              // Log vote data for debugging
+              console.log(`Dashboard - Proposal ${proposal.id} vote data:`, {
+                originalYesVotes: proposal.yesVotes,
+                originalNoVotes: proposal.noVotes,
+                originalAbstainVotes: proposal.abstainVotes,
+                extractedYesVotes: yesVotes,
+                extractedNoVotes: noVotes,
+                extractedAbstainVotes: abstainVotes,
+                userVoted,
+                userVoteType
+              });
+              
+              // Calculate total votes
               const totalVotes = yesVotes + noVotes + abstainVotes;
               
+              // Calculate percentages
               const yesPercentage = totalVotes > 0 ? (yesVotes / totalVotes) * 100 : 0;
               const noPercentage = totalVotes > 0 ? (noVotes / totalVotes) * 100 : 0;
               const abstainPercentage = totalVotes > 0 ? (abstainVotes / totalVotes) * 100 : 0;
+              
+              // Check if the user has voted
+              const userHasVoted = proposal.hasVoted || proposal.votedYes || proposal.votedNo;
+              let userHasVoteType = null;
+              if (proposal.votedYes) userVoteType = "Yes";
+              else if (proposal.votedNo) userVoteType = "No";
+              else if (proposal.hasVoted) userVoteType = "Abstain";
               
               return (
                 <div key={idx} className="p-4 border border-gray-200 rounded-lg">
@@ -176,6 +222,26 @@ const DashboardTab = ({ user, stats, loading, proposals }) => {
                       <div className="bg-gray-400 h-full" style={{ width: `${abstainPercentage}%` }}></div>
                     </div>
                   </div>
+                  {/* Vote counts */}
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>{Math.round(yesVotes)} votes</span>
+                    <span>{Math.round(noVotes)} votes</span>
+                    <span>{Math.round(abstainVotes)} votes</span>
+                  </div>
+                  
+                  {/* Show user's vote if they voted */}
+                  {userVoted && (
+                    <div className="mt-2 text-sm">
+                      <span className="text-gray-700">Your vote: </span>
+                      <span className={`font-medium ${
+                        userVoteType === "Yes" ? "text-green-600" : 
+                        userVoteType === "No" ? "text-red-600" : 
+                        "text-gray-600"
+                      }`}>
+                        {userVoteType}
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })
